@@ -44,6 +44,11 @@ small{font-size:13px}
 .big.out{background:var(--out);color:#fff}
 .big.out .sub{color:#fbd9c6}
 .big.alert{background:var(--bad);color:#fff}
+.big.blue{background:#1f5fa8;color:#fff}
+.big.blue .sub{color:#d6e4f5}
+.mapbox{border-radius:12px;overflow:hidden;background:#dde3d9;position:relative;z-index:0}
+.vtx{background:#ffd400;border:2px solid #000;border-radius:50%}
+.leaflet-tooltip.plabel{background:rgba(255,255,255,.85);border:0;box-shadow:none;font-weight:700;font-size:12px;padding:1px 5px}
 .big.alert .sub{color:#fcd2cd}
 .big:active{transform:scale(.99)}
 .grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
@@ -405,6 +410,7 @@ function topbar(title, back) {
 }
 function go(view, f) { S.view = view; S.f = f || {}; render(); window.scrollTo(0, 0); }
 function render() {
+  if (typeof killMaps === "function") killMaps();
   const v = VIEWS[S.view] || VIEWS.loading;
   $("#app").innerHTML = v.html();
   if (v.after) v.after();
@@ -586,7 +592,7 @@ VIEWS.home = {
       h += '<button class="big pri" data-a="startPick" data-m="entree"><span class="ic">📥</span><span>Réception livraison<span class="sub">Entrer des produits dans le stock</span></span></button>';
       h += '<button class="big out" data-a="startPick" data-m="sortie"><span class="ic">📤</span><span>Sortie de produit<span class="sub">Je prends un produit</span></span></button>';
       { const nt = Object.values(S.traitements || {}).filter(t => t.statut === "a_faire").length;
-        h += '<button class="big" data-a="go" data-v="trt"><span class="ic">🚜</span><span>Ordres de traitement<span class="sub">' + (nt ? nt + " à faire" : "Parcelles, pulvérisateurs, consignes") + "</span></span></button>"; }
+        h += '<button class="big blue" data-a="go" data-v="trt"><span class="ic">🚜</span><span>Ordres de traitement<span class="sub">' + (nt ? nt + " à faire" : "Parcelles, pulvérisateurs, consignes") + "</span></span></button>"; }
       h += '<div class="grid2">' +
         '<button class="big" data-a="go" data-v="stock"><span class="ic">📦</span>Stock</button>' +
         '<button class="big" data-a="go" data-v="commandes"><span class="ic">🛒</span>Commandes' + (cmd ? '<span class="sub">' + cmd + " en cours</span>" : "") + "</button>" +
@@ -595,7 +601,7 @@ VIEWS.home = {
         '<button class="big" data-a="go" data-v="inv"><span class="ic">📝</span>Inventaire' + (store.get(INV_KEY) && Object.values((store.get(INV_KEY) || {}).items || {}).some(i => i.done) ? '<span class="sub">en cours</span>' : "") + "</button>" +
         '<button class="big" data-a="go" data-v="ephy"><span class="ic">📚</span>Données E-Phy</button>' +
         '<button class="big" data-a="go" data-v="registre"><span class="ic">📒</span>Registre phyto</button>' +
-        '<button class="big" data-a="go" data-v="ents"><span class="ic">🏢</span>Entreprises</button>' +
+        '<button class="big" data-a="go" data-v="ents"><span class="ic">🏢</span>Exploitations</button>' +
         "</div>" + '<button class="big" style="margin-top:10px" data-a="go" data-v="print"><span class="ic">🖨️</span><span>Imprimer l\'état du stock<span class="sub">Stock, statuts E-Phy, personnes et n° Certiphyto</span></span></button>';
     } else {
       for (const [id, d] of Object.entries(S.demandes || {}).filter(([, d]) => d.statut === "ouverte" && d.userId === S.me.id)) {
@@ -603,7 +609,7 @@ VIEWS.home = {
         h += '<button class="big pri" data-a="goReq" data-id="' + esc(id) + '"><span class="ic">📝</span><span>Inventaire demandé<span class="sub">par ' + esc(d.creePar) + " · " + nb + " produit(s)" + (d.echeance ? " · avant le " + fmtDate(d.echeance) : "") + (store.get(INV_KEY + "." + id) ? " · commencé" : "") + "</span></span></button>";
       }
       for (const [id, t] of Object.entries(S.traitements || {}).filter(([, t]) => t.statut === "a_faire").sort((a, b) => String(a[1].datePrevue).localeCompare(String(b[1].datePrevue)))) {
-        h += '<button class="big pri" data-a="go" data-v="trtview:' + esc(id) + '"><span class="ic">🚜</span><span>Traitement à faire' + (t.datePrevue < today() ? " (en retard)" : "") + '<span class="sub">' + fmtDate(t.datePrevue) + " · " + esc(trtTitle(t)) + " · " + ((t.data.calc || {}).n || "?") + " cuve(s)</span></span></button>";
+        h += '<button class="big blue" data-a="go" data-v="trtview:' + esc(id) + '"><span class="ic">🚜</span><span>Traitement à faire' + (t.datePrevue < today() ? " (en retard)" : "") + '<span class="sub">' + fmtDate(t.datePrevue) + " · " + esc(trtTitle(t)) + " · " + ((t.data.calc || {}).n || "?") + " cuve(s)</span></span></button>";
       }
       h += '<button class="big out" style="min-height:110px;font-size:22px" data-a="startPick" data-m="sortie"><span class="ic">📤</span><span>Sortie de produit<span class="sub">Je prends un produit</span></span></button>';
       h += '<div class="grid2"><button class="big" data-a="go" data-v="stock"><span class="ic">📦</span>Voir le stock</button>' +
@@ -1446,6 +1452,167 @@ function calcHtml(c, compact) {
   return h;
 }
 
+/* ---------- Cartes (Leaflet + fonds IGN Géoplateforme) ---------- */
+let leafletP = null;
+function loadLeaflet() {
+  if (window.L && L.map) return Promise.resolve();
+  if (!leafletP) leafletP = new Promise((res, rej) => {
+    const l = document.createElement("link"); l.rel = "stylesheet"; l.href = "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css"; document.head.appendChild(l);
+    const s = document.createElement("script"); s.src = "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js";
+    s.onload = res; s.onerror = () => { leafletP = null; rej(new Error("Carte indisponible (connexion ?)")); };
+    document.head.appendChild(s);
+  });
+  return leafletP;
+}
+const IGN_URL = (layer, fmt) => "https://data.geopf.fr/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER=" + layer + "&STYLE=normal&FORMAT=" + fmt + "&TILEMATRIXSET=PM&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}";
+let MAPS = [];
+function killMaps() { for (const m of MAPS) { try { m.remove(); } catch (e) {} } MAPS = []; }
+function makeMap(el) {
+  const map = L.map(el, { maxZoom: 21, zoomSnap: 0.5, tap: true }).setView([46.6, 2.4], 6);  // vue initiale obligatoire avant d'ajouter des formes
+  const ortho = L.tileLayer(IGN_URL("ORTHOIMAGERY.ORTHOPHOTOS", "image/jpeg"), { maxNativeZoom: 19, maxZoom: 21, attribution: "© IGN – Géoplateforme" });
+  const plan = L.tileLayer(IGN_URL("GEOGRAPHICALGRIDSYSTEMS.PLANIGNV2", "image/png"), { maxNativeZoom: 19, maxZoom: 21, attribution: "© IGN – Géoplateforme" });
+  const cad = L.tileLayer(IGN_URL("CADASTRALPARCELS.PARCELLAIRE_EXPRESS", "image/png"), { maxNativeZoom: 19, maxZoom: 21, opacity: 0.85 });
+  ortho.addTo(map);
+  L.control.layers({ "Photo aérienne": ortho, "Plan IGN": plan }, { "Cadastre": cad }, { collapsed: true, position: "topright" }).addTo(map);
+  L.control.scale({ imperial: false }).addTo(map);
+  MAPS.push(map);
+  return map;
+}
+/* Surface géodésique (m²) d'un polygone [[lat, lon], ...] */
+function geoArea(pts) {
+  if (!pts || pts.length < 3) return 0;
+  const R = 6378137, r = Math.PI / 180; let a = 0;
+  for (let i = 0; i < pts.length; i++) { const p1 = pts[i], p2 = pts[(i + 1) % pts.length]; a += (p2[1] - p1[1]) * r * (2 + Math.sin(p1[0] * r) + Math.sin(p2[0] * r)); }
+  return Math.abs(a * R * R / 2);
+}
+function geoCenter(pts) {
+  if (!pts || !pts.length) return null;
+  // barycentre de la surface (projection locale)
+  const lat0 = pts[0][0] * Math.PI / 180, k = Math.cos(lat0);
+  let A = 0, cx = 0, cy = 0;
+  for (let i = 0; i < pts.length; i++) {
+    const x1 = pts[i][1] * k, y1 = pts[i][0], x2 = pts[(i + 1) % pts.length][1] * k, y2 = pts[(i + 1) % pts.length][0], f = x1 * y2 - x2 * y1;
+    A += f; cx += (x1 + x2) * f; cy += (y1 + y2) * f;
+  }
+  if (Math.abs(A) < 1e-12) return [pts.reduce((s, p) => s + p[0], 0) / pts.length, pts.reduce((s, p) => s + p[1], 0) / pts.length];
+  return [cy / (3 * A), cx / (3 * A) / k];
+}
+const parcPoint = p => (p && p.geom && p.geom.length >= 3) ? geoCenter(p.geom) : (p && p.lat != null && p.lon != null ? [+p.lat, +p.lon] : null);
+const ENT_COLORS = ["#2e6a39", "#1f5fa8", "#a15c00", "#8e2a8e", "#b42318", "#0f766e", "#5b4b8a"];
+function entColor(eid) { const ids = Object.keys(S.entreprises || {}).sort(); const i = ids.indexOf(eid); return i < 0 ? "#555" : ENT_COLORS[i % ENT_COLORS.length]; }
+const goLink = pt => "https://www.google.com/maps/dir/?api=1&destination=" + pt[0].toFixed(6) + "," + pt[1].toFixed(6);
+function fitTo(map, groups, fallback) {
+  const b = L.latLngBounds([]);
+  groups.forEach(g => { try { const gb = g.getBounds ? g.getBounds() : null; if (gb && gb.isValid()) b.extend(gb); else if (g.getLatLng) b.extend(g.getLatLng()); } catch (e) {} });
+  if (b.isValid()) map.fitBounds(b, { padding: [24, 24], maxZoom: 18 }); else map.setView(fallback || [46.6, 2.4], fallback ? 16 : 6);
+}
+function drawParcels(map, opts = {}) {
+  const layers = [];
+  for (const [id, p] of Object.entries(S.parcelles || {})) {
+    if (!p || p.actif === false || id === opts.exclude) continue;
+    const hl = !opts.only || opts.only.includes(id);
+    if (opts.only && !hl && !opts.showOthers) continue;
+    const col = opts.color ? opts.color(id, p) : entColor(p.entrepriseId);
+    let lay = null;
+    if (p.geom && p.geom.length >= 3) lay = L.polygon(p.geom, { color: hl ? col : "#999", weight: hl ? 3 : 1, fillOpacity: hl ? 0.25 : 0.05 });
+    else if (p.lat != null && p.lon != null) lay = L.circleMarker([+p.lat, +p.lon], { radius: 8, color: hl ? col : "#999", weight: 3, fillOpacity: 0.5 });
+    if (!lay) continue;
+    lay.addTo(map);
+    if (hl) {
+      lay.bindTooltip(esc(p.nom), { permanent: !!opts.labels, direction: "center", className: "plabel" });
+      const pt = parcPoint(p), e = (S.entreprises || {})[p.entrepriseId];
+      lay.bindPopup("<b>" + esc(p.nom) + "</b><br>" + fmtN(p.surface) + " ha" + (p.culture ? " · " + esc(p.culture) : "") + (e ? "<br>" + esc(e.nom) : "") +
+        '<div style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap">' + (pt ? '<a class="btn sm" href="' + goLink(pt) + '" target="_blank" rel="noopener">📍 Y aller</a>' : "") +
+        (isDec() && opts.fiche !== false ? '<button class="btn sm" data-a="go" data-v="parc:' + esc(id) + '">Fiche</button>' : "") + "</div>");
+      layers.push(lay);
+    }
+  }
+  return layers;
+}
+
+/* ---- Dessin du contour dans la fiche parcelle ---- */
+const DRAW = { map: null, poly: null, line: null, marks: [], on: false };
+function drawRefresh() {
+  const g = S.f.geom || [], map = DRAW.map; if (!map) return;
+  DRAW.marks.forEach(m => m.remove()); DRAW.marks = [];
+  if (DRAW.poly) { DRAW.poly.remove(); DRAW.poly = null; }
+  if (g.length >= 3) DRAW.poly = L.polygon(g, { color: "#ffd400", weight: 3, fillOpacity: 0.2 }).addTo(map);
+  else if (g.length === 2) DRAW.poly = L.polyline(g, { color: "#ffd400", weight: 3 }).addTo(map);
+  g.forEach((pt, i) => {
+    const m = L.marker(pt, { draggable: true, icon: L.divIcon({ className: "vtx", iconSize: [18, 18] }) }).addTo(map);
+    m.on("drag", ev => { const ll = ev.target.getLatLng(); g[i] = [+ll.lat.toFixed(7), +ll.lng.toFixed(7)]; if (DRAW.poly) DRAW.poly.setLatLngs(g); drawInfo(); });
+    m.on("dragend", () => drawRefresh());
+    DRAW.marks.push(m);
+  });
+  drawInfo();
+}
+function drawInfo() {
+  const el = $("#pa_draw_info"); if (!el) return;
+  const g = S.f.geom || [], ha = geoArea(g) / 10000;
+  const surf = parseN(($("#pa_surf") || {}).value);
+  el.innerHTML = DRAW.on ? "<b>Mode dessin</b> : touchez la carte pour poser les coins de la parcelle, dans l'ordre. Faites glisser un point pour le déplacer." :
+    (g.length >= 3 ? "Contour : " + g.length + " points" : "Pas encore de contour.");
+  if (g.length >= 3) el.innerHTML += '<br>Surface dessinée : <b>' + fmtN(ha) + " ha</b>" + (surf > 0 && Math.abs(surf - ha) / surf > 0.05 ? ' <span style="color:var(--warn)">(saisie : ' + fmtN(surf) + " ha)</span>" : "") +
+    ' <button class="btn sm" data-a="drawUseSurf">Utiliser cette surface</button>';
+  const bt = $("#pa_draw_btn"); if (bt) { bt.textContent = DRAW.on ? "✅ Terminer le dessin" : (g.length ? "✏️ Modifier le contour" : "✏️ Dessiner le contour"); bt.classList.toggle("pri", DRAW.on); }
+}
+async function parcMapInit() {
+  const el = $("#pa_map"); if (!el) return;
+  try { await loadLeaflet(); } catch (e) { el.innerHTML = '<div class="note warn" style="margin:0">' + esc(e.message) + "</div>"; return; }
+  if (!document.body.contains(el)) return;
+  const map = makeMap(el); DRAW.map = map; DRAW.on = false; DRAW.poly = null; DRAW.marks = [];
+  const others = drawParcels(map, { exclude: S.f.pid, color: () => "#ffffff", fiche: false });
+  others.forEach(l => l.setStyle({ color: "#ffffff", weight: 1.5, fillOpacity: 0.08, dashArray: "4 4" }));
+  const p = S.f.pid ? S.parcelles[S.f.pid] || {} : {};
+  if (S.f.geom === undefined) S.f.geom = p.geom ? p.geom.map(x => [x[0], x[1]]) : [];
+  drawRefresh();
+  if (S.f.geom.length >= 3) map.fitBounds(L.polygon(S.f.geom).getBounds(), { padding: [30, 30], maxZoom: 19 });
+  else if (p.lat != null && p.lon != null) map.setView([+p.lat, +p.lon], 17);
+  else fitTo(map, others, null);
+  map.on("click", ev => { if (!DRAW.on) return; S.f.geom.push([+ev.latlng.lat.toFixed(7), +ev.latlng.lng.toFixed(7)]); drawRefresh(); });
+}
+function locateOn(map, zoom) {
+  if (!navigator.geolocation) return toast("Position indisponible sur cet appareil.", "err");
+  toast("Recherche de la position…");
+  navigator.geolocation.getCurrentPosition(pos => {
+    const ll = [pos.coords.latitude, pos.coords.longitude];
+    map.setView(ll, zoom || 18);
+    L.circleMarker(ll, { radius: 7, color: "#1f5fa8", fillColor: "#1f5fa8", fillOpacity: 0.9 }).addTo(map);
+  }, err => toast("Position refusée ou indisponible : " + err.message, "err", 5000), { enableHighAccuracy: true, timeout: 20000 });
+}
+
+/* ---- Carte de toutes les parcelles ---- */
+VIEWS.carte = {
+  html() {
+    const ents = Object.entries(S.entreprises || {}).filter(([id]) => activeParcs().some(([, p]) => p.entrepriseId === id));
+    const noGeo = activeParcs().filter(([, p]) => !parcPoint(p));
+    let h = topbar("Carte des parcelles", isDec() ? "parcs" : "home");
+    h += '<div id="map_all" class="mapbox" style="height:68vh"></div>';
+    h += '<div class="row" style="margin-top:8px;flex-wrap:wrap"><button class="btn sm" data-a="mapLocate">📍 Me localiser</button>' +
+      ents.map(([id, e]) => '<span style="font-size:13px"><span style="display:inline-block;width:12px;height:12px;border-radius:3px;background:' + entColor(id) + ';vertical-align:middle"></span> ' + esc(e.nom) + "</span>").join("") + "</div>";
+    if (noGeo.length) h += '<p class="muted" style="font-size:13px">Pas encore sur la carte : ' + noGeo.map(([, p]) => esc(p.nom)).join(", ") + ". Dessinez leur contour depuis leur fiche.</p>";
+    return h;
+  },
+  async after() {
+    const el = $("#map_all"); if (!el) return;
+    try { await loadLeaflet(); } catch (e) { el.innerHTML = '<div class="note warn" style="margin:0">' + esc(e.message) + "</div>"; return; }
+    if (!document.body.contains(el)) return;
+    const map = makeMap(el); S._mapAll = map;
+    fitTo(map, drawParcels(map, { labels: true }), null);
+  }
+};
+
+/* ---- Carte dans l'ordre de traitement ---- */
+async function trtMapInit(t) {
+  const el = $("#trt_map"); if (!el) return;
+  try { await loadLeaflet(); } catch (e) { el.remove(); return; }
+  if (!document.body.contains(el)) return;
+  const ids = (t.data.parcelles || []).map(p => p.id);
+  const map = makeMap(el);
+  const done = (t.data.realise && t.data.realise.parcelles) || null;
+  fitTo(map, drawParcels(map, { only: ids, showOthers: true, labels: true, color: id => (done && !done.includes(id)) ? "#999" : "#ffd400" }), null);
+}
+
 /* ---------- Parcelles ---------- */
 VIEWS.parcs = {
   live: true,
@@ -1455,6 +1622,7 @@ VIEWS.parcs = {
     let h = topbar("Parcelles", "trt") + "<h1>Parcelles</h1><p class=\"muted\">" + activeParcs().length + " parcelle(s) · " + fmtN(tot) + " ha</p>";
     h += ps.length ? '<div class="list">' + ps.map(([id, p]) => '<button class="it" data-a="go" data-v="parc:' + esc(id) + '"' + (p.actif === false ? ' style="opacity:.5"' : "") + '><div class="main"><div class="nm">' + esc(p.nom) + (p.actif === false ? ' <span class="badge adj">Archivée</span>' : "") + '</div><div class="meta">' + esc([p.culture, p.variete].filter(Boolean).join(" · ") || "—") + (parcMissing(p).length ? ' · <span style="color:var(--warn)">registre : manque ' + esc(parcMissing(p).join(", ")) + "</span>" : "") + '</div></div><div class="qty">' + fmtN(p.surface) + " ha</div></button>").join("") + "</div>"
       : '<div class="note info">Aucune parcelle. Ajoutez-les une fois : elles serviront à chaque ordre de traitement.</div>';
+    if (ps.length) h += '<button class="btn full" style="margin-top:12px" data-a="go" data-v="carte">🗺️ Voir la carte des parcelles</button>';
     if (isDec()) h += '<div class="foot"><button class="btn pri full" data-a="go" data-v="parc">➕ Ajouter une parcelle</button></div>';
     return h;
   }
@@ -1462,12 +1630,16 @@ VIEWS.parcs = {
 VIEWS.parc = {
   html() {
     const id = S.f.pid, p = id ? (S.parcelles[id] || {}) : {};
-    let h = topbar(id ? "Parcelle" : "Nouvelle parcelle", "parcs") + "<h1>" + (id ? esc(p.nom) : "Nouvelle parcelle") + "</h1>";
+    let h = topbar(id ? "Parcelle" : "Nouvelle parcelle", S.f.back || "parcs") + "<h1>" + (id ? esc(p.nom) : "Nouvelle parcelle") + "</h1>" +
+      (!id && S.f.ent && S.entreprises[S.f.ent] ? '<p class="muted" style="margin-top:-6px">Exploitation : <b>' + esc(S.entreprises[S.f.ent].nom) + "</b></p>" : "");
     h += '<label class="f">Nom</label><input class="in" id="pa_nom" value="' + esc(p.nom || "") + '" placeholder="ex. Les Combes – bloc 3">';
     h += '<label class="f">Surface <small>(hectares)</small></label><input class="in" id="pa_surf" inputmode="decimal" value="' + esc(p.surface ?? "") + '" placeholder="ex. 1,35">';
+    h += '<label class="f">Contour sur la carte <small>(facultatif)</small></label><div id="pa_map" class="mapbox" style="height:360px"></div>' +
+      '<div class="row" style="margin-top:8px;flex-wrap:wrap;gap:6px"><button class="btn" id="pa_draw_btn" data-a="drawToggle">✏️ Dessiner le contour</button><button class="btn sm" data-a="drawUndo">↩ Dernier point</button><button class="btn sm" data-a="drawClear">🗑 Effacer</button><button class="btn sm" data-a="drawLocate">📍 Me localiser</button></div>' +
+      '<p class="muted" id="pa_draw_info" style="font-size:14px;margin:6px 2px"></p>';
     h += '<label class="f">Culture</label><input class="in" id="pa_cult" list="cultures" value="' + esc(p.culture || "") + '" placeholder="ex. Pommier"><datalist id="cultures"><option>Pommier</option><option>Poirier</option><option>Prunier</option><option>Cerisier</option><option>Pêcher</option><option>Abricotier</option></datalist>';
     h += '<label class="f">Variété <small>(facultatif)</small></label><input class="in" id="pa_var" value="' + esc(p.variete || "") + '">';
-    h += '<label class="f">Entreprise du groupe</label><select class="in" id="pa_ent"><option value="">—</option>' + activeEnts().map(([eid, e]) => '<option value="' + esc(eid) + '"' + ((p.entrepriseId || (!id && activeEnts().length === 1 ? eid : "")) === eid ? " selected" : "") + ">" + esc(e.nom) + "</option>").join("") + "</select>" +
+    h += '<label class="f">Entreprise du groupe</label><select class="in" id="pa_ent"><option value="">—</option>' + activeEnts().map(([eid, e]) => '<option value="' + esc(eid) + '"' + ((p.entrepriseId || (!id && (S.f.ent || (activeEnts().length === 1 ? eid : "")))) === eid ? " selected" : "") + ">" + esc(e.nom) + "</option>").join("") + "</select>" +
       (activeEnts().length ? "" : '<p class="muted" style="font-size:13px">Aucune entreprise : ajoutez-les dans Registre → Entreprises.</p>');
     h += '<label class="f">Code culture OEPP <small>(registre ; ex. MABSD pommier, PYUCO poirier, PRNDO prunier)</small></label><input class="in" id="pa_oepp" maxlength="6" style="text-transform:uppercase" value="' + esc(p.codeOepp || "") + '">';
     h += '<label class="tog"><span><b>Conduite en agriculture biologique</b></span><input type="checkbox" id="pa_bio" ' + (p.bio ? "checked" : "") + "></label>";
@@ -1479,9 +1651,14 @@ VIEWS.parc = {
     if (id) h += '<label class="tog"><span><b>Parcelle active</b><br><small class="muted">Décocher pour l\'archiver (arrachée, vendue…)</small></span><input type="checkbox" id="pa_act" ' + (p.actif !== false ? "checked" : "") + "></label>";
     h += '<div style="margin-top:16px"><button class="btn pri full" data-a="saveParc">Enregistrer</button></div>';
     return h;
-  }
+  },
+  after() { parcMapInit(); const sf = $("#pa_surf"); if (sf) sf.addEventListener("input", drawInfo); }
 };
 async function saveParc() {
+  // si la carte n'a pas pu s'afficher, on garde le contour existant
+  const geom = S.f.geom === undefined ? (((S.parcelles || {})[S.f.pid] || {}).geom || null) : (S.f.geom.length >= 3 ? S.f.geom : null);
+  if (geom && !$("#pa_lat").value.trim() && !$("#pa_lon").value.trim()) { const c = geoCenter(geom); $("#pa_lat").value = c[0].toFixed(7); $("#pa_lon").value = c[1].toFixed(7); }
+  if (geom && !parseN($("#pa_surf").value)) $("#pa_surf").value = String(Math.round(geoArea(geom) / 100) / 100).replace(".", ",");
   const surf = parseN($("#pa_surf").value);
   if (!$("#pa_nom").value.trim()) return toast("Indiquez le nom.", "err");
   if (!(surf > 0)) return toast("Indiquez la surface en hectares.", "err");
@@ -1492,8 +1669,11 @@ async function saveParc() {
     p_notes: $("#pa_notes").value, p_actif: S.f.pid ? $("#pa_act").checked : true,
     p_ilot: $("#pa_ilot").value, p_num_parcelle: $("#pa_num").value, p_insee: $("#pa_insee").value,
     p_lat: isFinite(lat) ? lat : null, p_lon: isFinite(lon) ? lon : null, p_code_oepp: oepp, p_bio: $("#pa_bio").checked,
-    p_entreprise_id: $("#pa_ent").value || null }, "Parcelle enregistrée");
-  if (r) go("parcs");
+    p_entreprise_id: $("#pa_ent").value || null, p_geom: geom }, "Parcelle enregistrée");
+  if (!r) return;
+  const back = S.f.back || "parcs";
+  if (back === "trtnew") { const o = S._oDraft || null; S._oDraft = null; if (o && r.r) o.parc[r.r] = true; return go("trtnew", o ? { o } : {}); }
+  const [v, bpid] = back.split(":"); go(v, bpid ? { pid: bpid } : {});
 }
 
 /* ---------- Pulvérisateurs ---------- */
@@ -1548,10 +1728,11 @@ VIEWS.trt = {
     const done = all.filter(([, t]) => t.statut !== "a_faire").sort((a, b) => String(b[1].faitLe || b[1].datePrevue).localeCompare(String(a[1].faitLe || a[1].datePrevue))).slice(0, 30);
     let h = topbar("Traitements", "home") + "<h1>Ordres de traitement</h1>";
     if (isDec()) {
-      h += '<button class="big pri" data-a="go" data-v="trtnew"><span class="ic">➕</span><span>Nouvel ordre de traitement</span></button>';
+      h += '<button class="big blue" data-a="go" data-v="trtnew"><span class="ic">➕</span><span>Nouvel ordre de traitement</span></button>';
       h += '<div class="grid2"><button class="big" data-a="go" data-v="parcs"><span class="ic">🗺️</span>Parcelles<span class="sub">' + activeParcs().length + " · " + fmtN(activeParcs().reduce((s, [, p]) => s + (+p.surface || 0), 0)) + ' ha</span></button>' +
         '<button class="big" data-a="go" data-v="pulvs"><span class="ic">🚜</span>Pulvérisateurs<span class="sub">' + activePulvs().length + "</span></button>" +
-        '<button class="big" data-a="go" data-v="registre"><span class="ic">📒</span>Registre phyto</button><button class="big" data-a="go" data-v="ents"><span class="ic">🏢</span>Entreprises</button></div>';
+        '<button class="big" data-a="go" data-v="registre"><span class="ic">📒</span>Registre phyto</button><button class="big" data-a="go" data-v="ents"><span class="ic">🏢</span>Exploitations</button></div>' +
+        '<button class="big" data-a="go" data-v="carte"><span class="ic">🗺️</span><span>Carte des parcelles</span></button>';
     }
     h += "<h2>À faire</h2>" + (todo.length ? '<div class="list">' + todo.map(([id, t]) => trtRow(id, t)).join("") + "</div>" : '<div class="note ok">Aucun traitement à faire.</div>');
     if (done.length) h += "<h2>Historique</h2><div class=\"list\">" + done.map(([id, t]) => trtRow(id, t)).join("") + "</div>";
@@ -1579,16 +1760,22 @@ VIEWS.trtnew = {
     if (!isDec()) return topbar("Ordre", "trt") + '<div class="note bad">Réservé aux décideurs.</div>';
     const o = trtOrder();
     if (!activeParcs().length || !activePulvs().length) return topbar("Nouvel ordre", "trt") + '<div class="note warn">Ajoutez d\'abord vos ' + (!activeParcs().length ? "parcelles" : "") + (!activeParcs().length && !activePulvs().length ? " et vos " : "") + (!activePulvs().length ? "pulvérisateurs" : "") + ".</div>" +
-      '<div class="grid2"><button class="big" data-a="go" data-v="parcs">🗺️ Parcelles</button><button class="big" data-a="go" data-v="pulvs">🚜 Pulvérisateurs</button></div>';
+      '<div class="grid2"><button class="big" data-a="go" data-v="ents">🏢 Exploitations et parcelles</button><button class="big" data-a="go" data-v="pulvs">🚜 Pulvérisateurs</button></div>';
     let h = topbar("Nouvel ordre", "trt") + "<h1>Nouvel ordre de traitement</h1>";
     // date + opérateur
     const ops = Object.entries(S.users).filter(([, u]) => u && u.actif !== false).sort((a, b) => norm(a[1].prenom).localeCompare(norm(b[1].prenom)));
     h += '<div class="row"><div><label class="f">Date prévue</label><input class="in" type="date" id="o_date" value="' + esc(o.date) + '"></div>' +
       '<div><label class="f">Opérateur</label><select class="in" id="o_op"><option value="">N\'importe lequel</option>' + ops.map(([id, u]) => '<option value="' + esc(id) + '"' + (o.op === id ? " selected" : "") + ">" + esc(u.prenom) + "</option>").join("") + "</select></div></div>";
-    // parcelles
+    // exploitation puis parcelles
+    { const ents = activeEnts();
+      if (!o.ent && ents.length === 1) o.ent = ents[0][0];
+      h += '<label class="f">Exploitation</label><select class="in" id="o_ent"><option value="">— choisir —</option>' + ents.map(([id, e]) => '<option value="' + esc(id) + '"' + (o.ent === id ? " selected" : "") + ">" + esc(e.nom) + " · " + esc(e.siret) + "</option>").join("") + "</select>"; }
+    const visParcs = activeParcs().filter(([pid, p]) => !o.ent || p.entrepriseId === o.ent || (!p.entrepriseId && o.parc[pid]));
     const selSurf = Object.keys(o.parc).filter(k => o.parc[k] && S.parcelles[k]).reduce((s, k) => s + (+S.parcelles[k].surface || 0), 0);
-    h += '<label class="f">Parcelles <small id="o_psum">(' + fmtN(selSurf) + ' ha sélectionnés)</small></label><div class="list">' + activeParcs().map(([id, p]) =>
-      '<label class="it" style="cursor:pointer;min-height:54px"><input type="checkbox" data-opar="' + esc(id) + '" ' + (o.parc[id] ? "checked" : "") + ' style="width:24px;height:24px;accent-color:var(--acc)"><div class="main"><div class="nm" style="font-size:16px">' + esc(p.nom) + '</div><div class="meta">' + esc([p.culture, p.variete].filter(Boolean).join(" · ")) + '</div></div><div class="qty" style="font-size:15px">' + fmtN(p.surface) + " ha</div></label>").join("") + "</div>";
+    h += '<label class="f">Parcelles <small id="o_psum">(' + fmtN(selSurf) + ' ha sélectionnés)</small></label>' + (visParcs.length ? '<div class="list">' : "") + visParcs.map(([id, p]) =>
+      '<label class="it" style="cursor:pointer;min-height:54px"><input type="checkbox" data-opar="' + esc(id) + '" ' + (o.parc[id] ? "checked" : "") + ' style="width:24px;height:24px;accent-color:var(--acc)"><div class="main"><div class="nm" style="font-size:16px">' + esc(p.nom) + '</div><div class="meta">' + esc([p.culture, p.variete].filter(Boolean).join(" · ")) + '</div></div><div class="qty" style="font-size:15px">' + fmtN(p.surface) + " ha</div></label>").join("") + (visParcs.length ? "</div>" : "");
+    if (o.ent && !visParcs.length) h += '<div class="note info">Aucune parcelle pour cette exploitation.</div>';
+    if (o.ent) h += '<button class="btn sm" style="margin-top:8px" data-a="oNewParc">➕ Ajouter une parcelle' + (S.entreprises[o.ent] ? " à " + esc(S.entreprises[o.ent].nom) : "") + "</button>";
     // pulvé
     h += '<label class="f">Pulvérisateur</label><div class="grid2">' + activePulvs().map(([id, p]) =>
       '<button class="big" style="min-height:64px' + (o.pulve === id ? ";outline:3px solid var(--acc)" : "") + '" data-a="oPulve" data-id="' + esc(id) + '">' + esc(p.nom) + '<span class="sub">' + fmtN(p.capacite) + " L" + (p.volumeHa ? " · " + fmtN(p.volumeHa) + " L/ha" : "") + "</span></button>").join("") + "</div>";
@@ -1606,9 +1793,6 @@ VIEWS.trtnew = {
     h += '<button class="btn full" data-a="oAddProd">➕ Ajouter un produit</button>';
     // calcul
     h += '<h2>Préparation</h2><div id="trt_calc"></div>';
-    { const ents = activeEnts();
-      if (!o.ent) { const fromParc = Object.keys(o.parc).filter(k => o.parc[k] && S.parcelles[k]).map(k => S.parcelles[k].entrepriseId).find(Boolean); o.ent = fromParc || (ents.length === 1 ? ents[0][0] : ""); }
-      h += '<label class="f">Entreprise (registre)</label><select class="in" id="o_ent"><option value="">— choisir —</option>' + ents.map(([id, e]) => '<option value="' + esc(id) + '"' + (o.ent === id ? " selected" : "") + ">" + esc(e.nom) + " · " + esc(e.siret) + "</option>").join("") + "</select>"; }
     h += '<label class="tog card" style="margin-top:12px"><span><b>Noter les horaires</b><br><small class="muted">L\'opérateur devra indiquer l\'heure de début et de fin (ex. traitement en floraison)</small></span><input type="checkbox" id="o_hor" ' + (o.horaires ? "checked" : "") + "></label>";
     h += '<details class="card" style="margin-top:12px"' + (o.bbch || o.cible || o.sb ? " open" : "") + '><summary><b>Registre</b> : stade, cible, prestation <small class="muted">(facultatif)</small></summary>' +
       '<div class="row"><div><label class="f">Stade BBCH</label><input class="in" id="o_bbch" inputmode="numeric" maxlength="2" placeholder="ex. 57" value="' + esc(o.bbch) + '"></div><div><label class="f">Cible</label><input class="in" id="o_cible" placeholder="ex. Tavelure" value="' + esc(o.cible) + '"></div></div>' +
@@ -1636,7 +1820,7 @@ VIEWS.trtnew = {
     bind("#o_cible", "input", el => o.cible = el.value);
     bind("#o_mode", "input", el => o.mode = el.value);
     bind("#o_sb", "input", el => o.sb = el.value);
-    bind("#o_ent", "change", el => o.ent = el.value);
+    const oe = $("#o_ent"); if (oe) oe.addEventListener("change", () => { o.ent = oe.value; for (const k of Object.keys(o.parc)) { const pe = (S.parcelles[k] || {}).entrepriseId; if (pe && pe !== o.ent) delete o.parc[k]; } render(); });
     bind("#o_hor", "change", el => o.horaires = el.checked);
     bind("[data-opar]", "change", el => { o.parc[el.dataset.opar] = el.checked;
       if (el.checked && !o.ent && S.parcelles[el.dataset.opar].entrepriseId) { o.ent = S.parcelles[el.dataset.opar].entrepriseId; const se = $("#o_ent"); if (se) se.value = o.ent; } const s = Object.keys(o.parc).filter(k => o.parc[k] && S.parcelles[k]).reduce((t, k) => t + (+S.parcelles[k].surface || 0), 0); $("#o_psum").textContent = "(" + fmtN(s) + " ha sélectionnés)"; });
@@ -1702,8 +1886,9 @@ VIEWS.trtview = {
       '</div><div class="muted" style="font-size:12px">Donné par ' + esc(t.creePar) + " le " + fmtDate(String(t.createdAt).slice(0, 10)) + (d.entreprise ? " · " + esc(d.entreprise.nom) : "") + "</div></div></div>";
     // Bloc clair : appareil, parcelles, cuves, eau et produits par cuve
     h += '<div class="ob"><div class="ob-l">🚜 Appareil</div><div class="ob-v">' + esc(pv.nom || "?") + ' <small>(cuve ' + fmtN(pv.capacite) + " L)</small></div></div>";
-    h += '<div class="ob"><div class="ob-l">📍 Parcelles</div><div class="ob-v">' + (d.parcelles || []).map(p => esc(p.nom) + " <small>" + fmtN(p.surface) + " ha</small>").join("<br>") +
+    h += '<div class="ob"><div class="ob-l">📍 Parcelles</div><div class="ob-v">' + (d.parcelles || []).map(p => { const pt = parcPoint(S.parcelles[p.id]); return esc(p.nom) + " <small>" + fmtN(p.surface) + " ha</small>" + (pt ? ' <a class="btn sm noprint" style="min-height:32px;padding:2px 10px;font-size:13px" href="' + goLink(pt) + '" target="_blank" rel="noopener">📍 Y aller</a>' : ""); }).join("<br>") +
       '<div style="margin-top:4px"><span class="badge ' + (d.r2 ? "low" : "in") + '" style="margin:0;font-size:14px">' + (d.r2 ? "UN RANG SUR DEUX" : "Tous les rangs") + "</span></div></div></div>";
+    if ((d.parcelles || []).some(p => parcPoint(S.parcelles[p.id]))) h += '<div id="trt_map" class="mapbox noprint" style="height:260px;margin:10px 0"></div>';
     h += '<div class="ob"><div class="ob-l">🪣 Nombre de cuves</div><div class="ob-v" style="font-size:30px;font-weight:800">' + c.n + " <small>cuve" + (c.n > 1 ? "s" : "") + " de " + fmtN(Math.round(c.bCuve)) + " L</small></div></div>";
     h += '<div class="ob-t">Dans <u>chaque</u> cuve :</div><table class="sh obt"><tbody>';
     h += '<tr><td>💧 Eau</td><td class="r">' + fmtN(Math.round(c.eauCuve)) + " L</td></tr>";
@@ -1732,7 +1917,8 @@ VIEWS.trtview = {
     if (canDo) h += '<button class="btn pri full" data-a="trtDone">✅ Traitement réalisé</button>';
     h += '<div class="row" style="margin-top:10px"><button class="btn" data-a="doPrint">🖨️ Imprimer</button>' + (isDec() ? '<button class="btn" data-a="trtCopy">📄 Dupliquer</button>' : "") + (isDec() && t.statut === "a_faire" ? '<button class="btn" style="color:var(--bad)" data-a="trtCancel">Annuler l\'ordre</button>' : "") + "</div></div>";
     return h;
-  }
+  },
+  after() { const t = (S.traitements || {})[S.f.pid]; if (t) trtMapInit(t); }
 };
 function trtDone() {
   const t = S.traitements[S.f.pid]; if (!t) return;
@@ -1923,20 +2109,33 @@ VIEWS.ents = {
   html() {
     if (!isDec()) return topbar("Entreprises", "home") + '<div class="note bad">Réservé aux décideurs.</div>';
     const es = Object.entries(S.entreprises || {}).sort((a, b) => (a[1].actif === false) - (b[1].actif === false) || byName(a, b));
-    let h = topbar("Entreprises", "registre") + "<h1>Entreprises du groupe</h1><p class=\"muted\">Chaque entreprise tient son registre sous son SIRET. Rattachez chaque parcelle à son entreprise ; elle est proposée automatiquement dans les ordres.</p>";
-    h += es.length ? '<div class="list">' + es.map(([id, e]) => '<button class="it" data-a="go" data-v="ent:' + esc(id) + '"' + (e.actif === false ? ' style="opacity:.5"' : "") + '><div class="main"><div class="nm">' + esc(e.nom) + '</div><div class="meta">SIRET ' + esc(e.siret) + " · " + activeParcs().filter(([, p]) => p.entrepriseId === id).length + " parcelle(s)</div></div><div>›</div></button>").join("") + "</div>" : '<div class="note info">Aucune entreprise.</div>';
-    h += '<div class="foot"><button class="btn pri full" data-a="go" data-v="ent">➕ Ajouter une entreprise</button></div>';
+    let h = topbar("Exploitations", "home") + "<h1>Exploitations du groupe</h1><p class=\"muted\">Chaque entreprise tient son registre sous son SIRET. Rattachez chaque parcelle à son entreprise ; elle est proposée automatiquement dans les ordres.</p>";
+    h += es.length ? '<div class="list">' + es.map(([id, e]) => { const ps = activeParcs().filter(([, p]) => p.entrepriseId === id); return '<button class="it" data-a="go" data-v="ent:' + esc(id) + '"' + (e.actif === false ? ' style="opacity:.5"' : "") + '><div class="main"><div class="nm">' + esc(e.nom) + '</div><div class="meta">SIRET ' + esc(e.siret) + " · " + ps.length + " parcelle(s) · " + fmtN(ps.reduce((t, [, p]) => t + (+p.surface || 0), 0)) + " ha</div></div><div>›</div></button>"; }).join("") + "</div>" : '<div class="note info">Aucune exploitation.</div>';
+    const orphan = activeParcs().filter(([, p]) => !p.entrepriseId);
+    if (orphan.length) h += '<div class="note warn" style="font-size:14px">' + orphan.length + " parcelle(s) sans exploitation : " + orphan.map(([, p]) => esc(p.nom)).join(", ") + ". Ouvrez-les pour les rattacher.</div>";
+    h += '<div class="foot"><button class="btn pri full" data-a="go" data-v="ent">➕ Ajouter une exploitation</button></div>';
     return h;
   }
 };
 VIEWS.ent = {
+  live() { if (!S.f.edit && S.f.pid) render(); },
   html() {
     const id = S.f.pid, e = id ? (S.entreprises[id] || {}) : {};
-    let h = topbar(id ? "Entreprise" : "Nouvelle entreprise", "ents") + "<h1>" + (id ? esc(e.nom) : "Nouvelle entreprise") + "</h1>";
-    h += '<label class="f">Nom</label><input class="in" id="en_nom" value="' + esc(e.nom || "") + '">';
-    h += '<label class="f">SIRET <small>(14 chiffres)</small></label><input class="in" id="en_siret" inputmode="numeric" maxlength="17" value="' + esc(e.siret || "") + '">';
-    if (id) h += '<label class="tog"><span><b>Active</b></span><input type="checkbox" id="en_act" ' + (e.actif !== false ? "checked" : "") + "></label>";
-    h += '<div style="margin-top:16px"><button class="btn pri full" data-a="saveEnt">Enregistrer</button></div>';
+    let h = topbar(id ? "Exploitation" : "Nouvelle exploitation", "ents") + "<h1>" + (id ? esc(e.nom) : "Nouvelle exploitation") + "</h1>";
+    const form = '<label class="f">Nom</label><input class="in" id="en_nom" value="' + esc(e.nom || "") + '">' +
+      '<label class="f">SIRET <small>(14 chiffres)</small></label><input class="in" id="en_siret" inputmode="numeric" maxlength="17" value="' + esc(e.siret || "") + '">' +
+      (id ? '<label class="tog"><span><b>Active</b></span><input type="checkbox" id="en_act" ' + (e.actif !== false ? "checked" : "") + "></label>" : "") +
+      '<div style="margin-top:16px"><button class="btn pri full" data-a="saveEnt">Enregistrer</button></div>';
+    if (!id) return h + form;
+    const ps = activeParcs().filter(([, p]) => p.entrepriseId === id), tot = ps.reduce((t, [, p]) => t + (+p.surface || 0), 0);
+    h += '<p class="muted" style="margin-top:-6px">SIRET ' + esc(e.siret) + ' · <button class="link" style="padding:0" data-a="entEdit">Modifier</button></p>';
+    if (S.f.edit) h += '<div class="card">' + form + "</div>";
+    h += "<h2>Parcelles (" + ps.length + " · " + fmtN(tot) + " ha)</h2>";
+    h += ps.length ? '<div class="list">' + ps.map(([pid, p]) => '<button class="it" data-a="entParc" data-id="' + esc(pid) + '"><div class="main"><div class="nm">' + esc(p.nom) + '</div><div class="meta">' + esc([p.culture, p.variete].filter(Boolean).join(" · ") || "—") + (parcPoint(p) ? " · 🗺️" : "") + (parcMissing(p).length ? ' · <span style="color:var(--warn)">manque ' + esc(parcMissing(p).join(", ")) + "</span>" : "") + '</div></div><div class="qty">' + fmtN(p.surface) + " ha</div></button>").join("") + "</div>"
+      : '<div class="note info">Aucune parcelle pour cette exploitation.</div>';
+    h += '<button class="btn pri full" style="margin-top:12px" data-a="entAddParc">➕ Ajouter une parcelle à ' + esc(e.nom) + "</button>";
+    if (ps.some(([, p]) => parcPoint(p))) h += '<button class="btn full" style="margin-top:8px" data-a="go" data-v="carte">🗺️ Voir sur la carte</button>';
+    if (ps.length && activePulvs().length) h += '<button class="big blue" style="margin-top:14px" data-a="entOrder"><span class="ic">🚜</span><span>Nouvel ordre pour ' + esc(e.nom) + "</span></button>";
     return h;
   }
 };
@@ -1944,7 +2143,8 @@ async function saveEnt() {
   const siret = $("#en_siret").value.replace(/\s/g, "");
   if (!$("#en_nom").value.trim()) return toast("Indiquez le nom.", "err");
   if (!/^\d{14}$/.test(siret)) return toast("Le SIRET doit faire 14 chiffres.", "err");
-  if (await act("save_entreprise", { p_id: S.f.pid || null, p_nom: $("#en_nom").value, p_siret: siret, p_actif: S.f.pid ? $("#en_act").checked : true }, "Entreprise enregistrée")) go("ents");
+  const res = await act("save_entreprise", { p_id: S.f.pid || null, p_nom: $("#en_nom").value, p_siret: siret, p_actif: S.f.pid ? $("#en_act").checked : true }, "Exploitation enregistrée");
+  if (res) go("ent", { pid: S.f.pid || res.r });
 }
 
 /* ---------- État imprimable ---------- */
@@ -2229,6 +2429,17 @@ const A = {
   regDel: d => regDel(d.id),
   regManSave: () => regManSave(),
   saveEnt: () => saveEnt(),
+  entEdit: () => { S.f.edit = !S.f.edit; render(); },
+  entParc: d => go("parc", { pid: d.id, back: "ent:" + S.f.pid }),
+  entAddParc: () => go("parc", { ent: S.f.pid, back: "ent:" + S.f.pid }),
+  entOrder: () => go("trtnew", { o: { date: today(), op: "", parc: {}, pulve: "", vha: "", r2: false, prods: [], note: "", bbch: "", cible: "", mode: "Pulvérisation", sb: "", ent: S.f.pid, horaires: false } }),
+  oNewParc: () => { S._oDraft = trtOrder(); go("parc", { ent: S._oDraft.ent, back: "trtnew" }); },
+  drawToggle: () => { DRAW.on = !DRAW.on; if (DRAW.map) DRAW.map.getContainer().style.cursor = DRAW.on ? "crosshair" : ""; drawInfo(); },
+  drawUndo: () => { (S.f.geom || []).pop(); drawRefresh(); },
+  drawClear: async () => { if (!(S.f.geom || []).length) return; if (!await confirmBox("Effacer le contour ?", "Les points dessinés seront supprimés (rien n'est enregistré tant que vous ne touchez pas Enregistrer).", "Effacer", true)) return; S.f.geom = []; drawRefresh(); },
+  drawLocate: () => { if (DRAW.map) locateOn(DRAW.map, 18); },
+  drawUseSurf: () => { const ha = geoArea(S.f.geom || []) / 10000; $("#pa_surf").value = String(Math.round(ha * 100) / 100).replace(".", ","); drawInfo(); toast("Surface mise à jour : " + fmtN(ha) + " ha (pensez à enregistrer)."); },
+  mapLocate: () => { if (S._mapAll) locateOn(S._mapAll, 17); },
   delUser: async () => { const u = S.users[S.f.uid] || {};
     if (!await confirmBox("Supprimer le compte de " + (u.prenom || "?") + " ?", "Suppression définitive : la personne ne pourra plus se connecter. Son historique reste dans l'appli. Ses ordres de traitement à faire passent à « n'importe quel opérateur ».", "Supprimer", true)) return;
     if (await act("delete_user", { p_id: S.f.uid }, "Compte supprimé")) go("users"); },
