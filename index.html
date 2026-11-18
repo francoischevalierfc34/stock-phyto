@@ -189,6 +189,10 @@ const today = () => { const d = new Date(); return d.getFullYear()+"-"+pad(d.get
 const fmtDate = s => { if (!s) return ""; const [y,m,d] = String(s).slice(0,10).split("-"); return d+"/"+m+"/"+y; };
 const fmtD = n => (Math.round((+n || 0) * 10000) / 10000).toLocaleString("fr-FR", { maximumFractionDigits: 4 });
 const fmtN = n => (Math.round((+n || 0) * 100) / 100).toLocaleString("fr-FR", {maximumFractionDigits: 2});
+/* Taux de remplissage : part de la surface réellement plantée (rangs manquants). Surface utile = surface × taux. */
+const pTaux = p => { const t = +((p || {}).taux); return t > 0 && t <= 100 ? t : 100; };
+const pEff = p => Math.round((+((p || {}).surface) || 0) * pTaux(p) / 100 * 10000) / 10000;
+const surfTxt = p => pTaux(p) < 100 ? fmtN(pEff(p)) + ' ha <small style="font-weight:400" class="muted">(' + fmtN(pTaux(p)) + " %)</small>" : fmtN(pEff(p)) + " ha";
 const parseN = s => { const v = parseFloat(String(s ?? "").replace(/\s/g,"").replace(",", ".")); return isFinite(v) ? v : NaN; };
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const norm = s => String(s || "").normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().trim();
@@ -908,7 +912,7 @@ VIEWS.produit = {
     h += "<h2>Informations</h2><div class=\"card\">" + productForm(p) + '<div style="margin-top:16px"><button class="btn pri full" data-a="saveProduct">Enregistrer les modifications</button></div></div>';
     const mvs = Object.entries(S.mouvements).filter(([, m]) => m.produitId === S.f.pid).sort(sortMv).slice(0, 15);
     h += "<h2>Derniers mouvements</h2>" + (mvs.length ? '<div class="list">' + mvs.map(([id, m]) => mvRow(id, m, false)).join("") + "</div>" : '<p class="muted">Aucun.</p>');
-    h += '<div class="foot"><button class="btn ghost" style="color:var(--bad)" data-a="archiveProduct">Retirer ce produit de la liste</button></div>';
+    h += '<div class="foot"><button class="btn ghost" style="color:var(--bad)" data-a="archiveProduct">Retirer ce produit de la liste</button>' + (canAdmin() ? '<br><button class="btn ghost" style="color:var(--bad);margin-top:6px" data-a="deleteProductForever">🗑 Supprimer définitivement (produit de test)</button>' : "") + '</div>';
     return h;
   }
 };
@@ -946,6 +950,15 @@ async function archiveProduct() {
   const p = S.produits[S.f.pid];
   if (!await confirmBox("Retirer « " + p.nom + " » ?", "Il n'apparaîtra plus dans les listes. L'historique est conservé.", "Retirer", true)) return;
   if (await act("archive_produit", { p_id: S.f.pid }, "Produit retiré")) go("stock");
+}
+async function deleteProductForever() {
+  const p = S.produits[S.f.pid]; if (!p) return;
+  const r = await modal('<h3>Supprimer définitivement « ' + esc(p.nom) + ' » ?</h3><p class="muted">Efface le produit, tous ses mouvements, ses alertes, ses lignes du registre et les ordres de traitement qui le contiennent. Irréversible. À réserver aux produits de test.</p>' +
+    '<label class="f">Tapez le nom du produit pour confirmer</label><input class="in" data-mi autocomplete="off" placeholder="' + esc(p.nom) + '">' +
+    '<div class="acts"><button class="btn" data-m="cancel">Annuler</button><button class="btn bad" data-m="ok">Supprimer</button></div>');
+  if (!r) return;
+  const res = await act("produit_supprimer", { p_id: S.f.pid, p_confirm: r.input || "" });
+  if (res) { const d = res.r || {}; toast("Supprimé : " + (d.mouvements || 0) + " mouvement(s), " + (d.registre || 0) + " ligne(s) de registre, " + (d.ordres || 0) + " ordre(s)."); go("stock"); }
 }
 async function setOrder(pid, on) {
   const p = S.produits[pid]; if (!p) return;
@@ -1521,7 +1534,7 @@ function drawParcels(map, opts = {}) {
     if (hl) {
       lay.bindTooltip(esc(p.nom), { permanent: !!opts.labels, direction: "center", className: "plabel" });
       const pt = parcPoint(p), e = (S.entreprises || {})[p.entrepriseId];
-      lay.bindPopup("<b>" + esc(p.nom) + "</b><br>" + fmtN(p.surface) + " ha" + (p.culture ? " · " + esc(p.culture) : "") + (e ? "<br>" + esc(e.nom) : "") +
+      lay.bindPopup("<b>" + esc(p.nom) + "</b><br>" + surfTxt(p) + (p.culture ? " · " + esc(p.culture) : "") + (e ? "<br>" + esc(e.nom) : "") +
         '<div style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap">' + (pt ? '<a class="btn sm" href="' + goLink(pt) + '" target="_blank" rel="noopener">📍 Y aller</a>' : "") +
         (isDec() && opts.fiche !== false ? '<button class="btn sm" data-a="go" data-v="parc:' + esc(id) + '">Fiche</button>' : "") + "</div>");
       layers.push(lay);
@@ -1618,9 +1631,9 @@ VIEWS.parcs = {
   live: true,
   html() {
     const ps = Object.entries(S.parcelles || {}).sort((a, b) => (a[1].actif === false) - (b[1].actif === false) || byName(a, b));
-    const tot = activeParcs().reduce((s, [, p]) => s + (+p.surface || 0), 0);
+    const tot = activeParcs().reduce((s, [, p]) => s + pEff(p), 0);
     let h = topbar("Parcelles", "trt") + "<h1>Parcelles</h1><p class=\"muted\">" + activeParcs().length + " parcelle(s) · " + fmtN(tot) + " ha</p>";
-    h += ps.length ? '<div class="list">' + ps.map(([id, p]) => '<button class="it" data-a="go" data-v="parc:' + esc(id) + '"' + (p.actif === false ? ' style="opacity:.5"' : "") + '><div class="main"><div class="nm">' + esc(p.nom) + (p.actif === false ? ' <span class="badge adj">Archivée</span>' : "") + '</div><div class="meta">' + esc([p.culture, p.variete].filter(Boolean).join(" · ") || "—") + (parcMissing(p).length ? ' · <span style="color:var(--warn)">registre : manque ' + esc(parcMissing(p).join(", ")) + "</span>" : "") + '</div></div><div class="qty">' + fmtN(p.surface) + " ha</div></button>").join("") + "</div>"
+    h += ps.length ? '<div class="list">' + ps.map(([id, p]) => '<button class="it" data-a="go" data-v="parc:' + esc(id) + '"' + (p.actif === false ? ' style="opacity:.5"' : "") + '><div class="main"><div class="nm">' + esc(p.nom) + (p.actif === false ? ' <span class="badge adj">Archivée</span>' : "") + '</div><div class="meta">' + esc([p.culture, p.variete].filter(Boolean).join(" · ") || "—") + (parcMissing(p).length ? ' · <span style="color:var(--warn)">registre : manque ' + esc(parcMissing(p).join(", ")) + "</span>" : "") + '</div></div><div class="qty">' + surfTxt(p) + "</div></button>").join("") + "</div>"
       : '<div class="note info">Aucune parcelle. Ajoutez-les une fois : elles serviront à chaque ordre de traitement.</div>';
     if (ps.length) h += '<button class="btn full" style="margin-top:12px" data-a="go" data-v="carte">🗺️ Voir la carte des parcelles</button>';
     if (isDec()) h += '<div class="foot"><button class="btn pri full" data-a="go" data-v="parc">➕ Ajouter une parcelle</button></div>';
@@ -1634,10 +1647,12 @@ VIEWS.parc = {
       (!id && S.f.ent && S.entreprises[S.f.ent] ? '<p class="muted" style="margin-top:-6px">Exploitation : <b>' + esc(S.entreprises[S.f.ent].nom) + "</b></p>" : "");
     h += '<label class="f">Nom</label><input class="in" id="pa_nom" value="' + esc(p.nom || "") + '" placeholder="ex. Les Combes – bloc 3">';
     h += '<label class="f">Surface <small>(hectares)</small></label><input class="in" id="pa_surf" inputmode="decimal" value="' + esc(p.surface ?? "") + '" placeholder="ex. 1,35">';
+    h += '<label class="f">Taux de remplissage <small>(% de la surface réellement plantée ; 100 si aucun rang ne manque)</small></label><input class="in" id="pa_taux" inputmode="decimal" value="' + esc(p.taux != null ? String(p.taux).replace(".", ",") : "100") + '" placeholder="100">' +
+      '<p class="muted" id="pa_taux_info" style="font-size:14px;margin:6px 2px"></p>';
     h += '<label class="f">Contour sur la carte <small>(facultatif)</small></label><div id="pa_map" class="mapbox" style="height:360px"></div>' +
       '<div class="row" style="margin-top:8px;flex-wrap:wrap;gap:6px"><button class="btn" id="pa_draw_btn" data-a="drawToggle">✏️ Dessiner le contour</button><button class="btn sm" data-a="drawUndo">↩ Dernier point</button><button class="btn sm" data-a="drawClear">🗑 Effacer</button><button class="btn sm" data-a="drawLocate">📍 Me localiser</button></div>' +
       '<p class="muted" id="pa_draw_info" style="font-size:14px;margin:6px 2px"></p>';
-    h += '<label class="f">Culture</label><input class="in" id="pa_cult" list="cultures" value="' + esc(p.culture || "") + '" placeholder="ex. Pommier"><datalist id="cultures"><option>Pommier</option><option>Poirier</option><option>Prunier</option><option>Cerisier</option><option>Pêcher</option><option>Abricotier</option></datalist>';
+    h += '<label class="f">Culture</label><input class="in" id="pa_cult" list="cultures" value="' + esc(p.culture || "") + '" placeholder="ex. Pommier"><datalist id="cultures">' + CULTURES.map(c => "<option>" + esc(c) + "</option>").join("") + "</datalist>";
     h += '<label class="f">Variété <small>(facultatif)</small></label><input class="in" id="pa_var" value="' + esc(p.variete || "") + '">';
     h += '<label class="f">Entreprise du groupe</label><select class="in" id="pa_ent"><option value="">—</option>' + activeEnts().map(([eid, e]) => '<option value="' + esc(eid) + '"' + ((p.entrepriseId || (!id && (S.f.ent || (activeEnts().length === 1 ? eid : "")))) === eid ? " selected" : "") + ">" + esc(e.nom) + "</option>").join("") + "</select>" +
       (activeEnts().length ? "" : '<p class="muted" style="font-size:13px">Aucune entreprise : ajoutez-les dans Registre → Entreprises.</p>');
@@ -1652,7 +1667,13 @@ VIEWS.parc = {
     h += '<div style="margin-top:16px"><button class="btn pri full" data-a="saveParc">Enregistrer</button></div>';
     return h;
   },
-  after() { parcMapInit(); const sf = $("#pa_surf"); if (sf) sf.addEventListener("input", drawInfo); }
+  after() {
+    parcMapInit();
+    const info = () => { const s = parseN($("#pa_surf").value), t = parseN($("#pa_taux").value), el = $("#pa_taux_info"); if (!el) return;
+      el.innerHTML = s > 0 && t > 0 && t <= 100 ? "Surface utile (calcul des ordres et registre) : <b>" + fmtN(s * t / 100) + " ha</b>" : (t > 100 || t <= 0 ? '<span style="color:var(--bad)">Le taux doit être entre 1 et 100 %.</span>' : ""); };
+    const sf = $("#pa_surf"); if (sf) { sf.addEventListener("input", drawInfo); sf.addEventListener("input", info); }
+    const tf = $("#pa_taux"); if (tf) tf.addEventListener("input", info); info();
+  }
 };
 async function saveParc() {
   // si la carte n'a pas pu s'afficher, on garde le contour existant
@@ -1662,6 +1683,8 @@ async function saveParc() {
   const surf = parseN($("#pa_surf").value);
   if (!$("#pa_nom").value.trim()) return toast("Indiquez le nom.", "err");
   if (!(surf > 0)) return toast("Indiquez la surface en hectares.", "err");
+  const taux = $("#pa_taux").value.trim() === "" ? 100 : parseN($("#pa_taux").value);
+  if (!(taux > 0 && taux <= 100)) return toast("Taux de remplissage : entre 1 et 100 %.", "err");
   const lat = parseN($("#pa_lat").value), lon = parseN($("#pa_lon").value);
   let oepp = $("#pa_oepp").value.trim().toUpperCase();
   if (!oepp && OEPP[norm($("#pa_cult").value)]) oepp = OEPP[norm($("#pa_cult").value)];
@@ -1669,7 +1692,7 @@ async function saveParc() {
     p_notes: $("#pa_notes").value, p_actif: S.f.pid ? $("#pa_act").checked : true,
     p_ilot: $("#pa_ilot").value, p_num_parcelle: $("#pa_num").value, p_insee: $("#pa_insee").value,
     p_lat: isFinite(lat) ? lat : null, p_lon: isFinite(lon) ? lon : null, p_code_oepp: oepp, p_bio: $("#pa_bio").checked,
-    p_entreprise_id: $("#pa_ent").value || null, p_geom: geom }, "Parcelle enregistrée");
+    p_entreprise_id: $("#pa_ent").value || null, p_geom: geom, p_taux: taux }, "Parcelle enregistrée");
   if (!r) return;
   const back = S.f.back || "parcs";
   if (back === "trtnew") { const o = S._oDraft || null; S._oDraft = null; if (o && r.r) o.parc[r.r] = true; return go("trtnew", o ? { o } : {}); }
@@ -1729,7 +1752,7 @@ VIEWS.trt = {
     let h = topbar("Traitements", "home") + "<h1>Ordres de traitement</h1>";
     if (isDec()) {
       h += '<button class="big blue" data-a="go" data-v="trtnew"><span class="ic">➕</span><span>Nouvel ordre de traitement</span></button>';
-      h += '<div class="grid2"><button class="big" data-a="go" data-v="parcs"><span class="ic">🗺️</span>Parcelles<span class="sub">' + activeParcs().length + " · " + fmtN(activeParcs().reduce((s, [, p]) => s + (+p.surface || 0), 0)) + ' ha</span></button>' +
+      h += '<div class="grid2"><button class="big" data-a="go" data-v="parcs"><span class="ic">🗺️</span>Parcelles<span class="sub">' + activeParcs().length + " · " + fmtN(activeParcs().reduce((s, [, p]) => s + pEff(p), 0)) + ' ha</span></button>' +
         '<button class="big" data-a="go" data-v="pulvs"><span class="ic">🚜</span>Pulvérisateurs<span class="sub">' + activePulvs().length + "</span></button>" +
         '<button class="big" data-a="go" data-v="registre"><span class="ic">📒</span>Registre phyto</button><button class="big" data-a="go" data-v="ents"><span class="ic">🏢</span>Exploitations</button></div>' +
         '<button class="big" data-a="go" data-v="carte"><span class="ic">🗺️</span><span>Carte des parcelles</span></button>';
@@ -1749,7 +1772,7 @@ function trtOrder() {
 function trtInput(o) {
   const pv = S.pulves[o.pulve] || {};
   return {
-    parcelles: Object.keys(o.parc).filter(k => o.parc[k] && S.parcelles[k]).map(k => ({ id: k, nom: S.parcelles[k].nom, surface: +S.parcelles[k].surface, culture: S.parcelles[k].culture, variete: S.parcelles[k].variete })),
+    parcelles: Object.keys(o.parc).filter(k => o.parc[k] && S.parcelles[k]).map(k => ({ id: k, nom: S.parcelles[k].nom, surface: pEff(S.parcelles[k]), surfacePlan: +S.parcelles[k].surface, taux: pTaux(S.parcelles[k]), culture: S.parcelles[k].culture, variete: S.parcelles[k].variete })),
     r2: !!o.r2, volumeHa: parseN(o.vha), capacite: +pv.capacite || 0,
     produits: o.prods.map(x => ({ produitId: x.pid, nom: (S.produits[x.pid] || {}).nom, unite: U(S.produits[x.pid]), dose: x.dose, du: x.du, maxHa: x.max }))
   };
@@ -1771,9 +1794,9 @@ VIEWS.trtnew = {
       if (!o.ent && ents.length === 1) o.ent = ents[0][0];
       h += '<label class="f">Exploitation</label><select class="in" id="o_ent"><option value="">— choisir —</option>' + ents.map(([id, e]) => '<option value="' + esc(id) + '"' + (o.ent === id ? " selected" : "") + ">" + esc(e.nom) + " · " + esc(e.siret) + "</option>").join("") + "</select>"; }
     const visParcs = activeParcs().filter(([pid, p]) => !o.ent || p.entrepriseId === o.ent || (!p.entrepriseId && o.parc[pid]));
-    const selSurf = Object.keys(o.parc).filter(k => o.parc[k] && S.parcelles[k]).reduce((s, k) => s + (+S.parcelles[k].surface || 0), 0);
+    const selSurf = Object.keys(o.parc).filter(k => o.parc[k] && S.parcelles[k]).reduce((s, k) => s + pEff(S.parcelles[k]), 0);
     h += '<label class="f">Parcelles <small id="o_psum">(' + fmtN(selSurf) + ' ha sélectionnés)</small></label>' + (visParcs.length ? '<div class="list">' : "") + visParcs.map(([id, p]) =>
-      '<label class="it" style="cursor:pointer;min-height:54px"><input type="checkbox" data-opar="' + esc(id) + '" ' + (o.parc[id] ? "checked" : "") + ' style="width:24px;height:24px;accent-color:var(--acc)"><div class="main"><div class="nm" style="font-size:16px">' + esc(p.nom) + '</div><div class="meta">' + esc([p.culture, p.variete].filter(Boolean).join(" · ")) + '</div></div><div class="qty" style="font-size:15px">' + fmtN(p.surface) + " ha</div></label>").join("") + (visParcs.length ? "</div>" : "");
+      '<label class="it" style="cursor:pointer;min-height:54px"><input type="checkbox" data-opar="' + esc(id) + '" ' + (o.parc[id] ? "checked" : "") + ' style="width:24px;height:24px;accent-color:var(--acc)"><div class="main"><div class="nm" style="font-size:16px">' + esc(p.nom) + '</div><div class="meta">' + esc([p.culture, p.variete].filter(Boolean).join(" · ")) + '</div></div><div class="qty" style="font-size:15px">' + surfTxt(p) + "</div></label>").join("") + (visParcs.length ? "</div>" : "");
     if (o.ent && !visParcs.length) h += '<div class="note info">Aucune parcelle pour cette exploitation.</div>';
     if (o.ent) h += '<button class="btn sm" style="margin-top:8px" data-a="oNewParc">➕ Ajouter une parcelle' + (S.entreprises[o.ent] ? " à " + esc(S.entreprises[o.ent].nom) : "") + "</button>";
     // pulvé
@@ -1823,7 +1846,7 @@ VIEWS.trtnew = {
     const oe = $("#o_ent"); if (oe) oe.addEventListener("change", () => { o.ent = oe.value; for (const k of Object.keys(o.parc)) { const pe = (S.parcelles[k] || {}).entrepriseId; if (pe && pe !== o.ent) delete o.parc[k]; } render(); });
     bind("#o_hor", "change", el => o.horaires = el.checked);
     bind("[data-opar]", "change", el => { o.parc[el.dataset.opar] = el.checked;
-      if (el.checked && !o.ent && S.parcelles[el.dataset.opar].entrepriseId) { o.ent = S.parcelles[el.dataset.opar].entrepriseId; const se = $("#o_ent"); if (se) se.value = o.ent; } const s = Object.keys(o.parc).filter(k => o.parc[k] && S.parcelles[k]).reduce((t, k) => t + (+S.parcelles[k].surface || 0), 0); $("#o_psum").textContent = "(" + fmtN(s) + " ha sélectionnés)"; });
+      if (el.checked && !o.ent && S.parcelles[el.dataset.opar].entrepriseId) { o.ent = S.parcelles[el.dataset.opar].entrepriseId; const se = $("#o_ent"); if (se) se.value = o.ent; } const s = Object.keys(o.parc).filter(k => o.parc[k] && S.parcelles[k]).reduce((t, k) => t + pEff(S.parcelles[k]), 0); $("#o_psum").textContent = "(" + fmtN(s) + " ha sélectionnés)"; });
     bind("[data-odose]", "input", el => o.prods[+el.dataset.odose].dose = el.value);
     bind("[data-odu]", "change", el => o.prods[+el.dataset.odu].du = el.value);
     bind("[data-omax]", "input", el => o.prods[+el.dataset.omax].max = el.value);
@@ -1886,7 +1909,7 @@ VIEWS.trtview = {
       '</div><div class="muted" style="font-size:12px">Donné par ' + esc(t.creePar) + " le " + fmtDate(String(t.createdAt).slice(0, 10)) + (d.entreprise ? " · " + esc(d.entreprise.nom) : "") + "</div></div></div>";
     // Bloc clair : appareil, parcelles, cuves, eau et produits par cuve
     h += '<div class="ob"><div class="ob-l">🚜 Appareil</div><div class="ob-v">' + esc(pv.nom || "?") + ' <small>(cuve ' + fmtN(pv.capacite) + " L)</small></div></div>";
-    h += '<div class="ob"><div class="ob-l">📍 Parcelles</div><div class="ob-v">' + (d.parcelles || []).map(p => { const pt = parcPoint(S.parcelles[p.id]); return esc(p.nom) + " <small>" + fmtN(p.surface) + " ha</small>" + (pt ? ' <a class="btn sm noprint" style="min-height:32px;padding:2px 10px;font-size:13px" href="' + goLink(pt) + '" target="_blank" rel="noopener">📍 Y aller</a>' : ""); }).join("<br>") +
+    h += '<div class="ob"><div class="ob-l">📍 Parcelles</div><div class="ob-v">' + (d.parcelles || []).map(p => { const pt = parcPoint(S.parcelles[p.id]); return esc(p.nom) + " <small>" + fmtN(p.surface) + " ha" + (p.taux && p.taux < 100 ? " utiles (" + fmtN(p.surfacePlan) + " ha × " + fmtN(p.taux) + " %)" : "") + "</small>" + (pt ? ' <a class="btn sm noprint" style="min-height:32px;padding:2px 10px;font-size:13px" href="' + goLink(pt) + '" target="_blank" rel="noopener">📍 Y aller</a>' : ""); }).join("<br>") +
       '<div style="margin-top:4px"><span class="badge ' + (d.r2 ? "low" : "in") + '" style="margin:0;font-size:14px">' + (d.r2 ? "UN RANG SUR DEUX" : "Tous les rangs") + "</span></div></div></div>";
     if ((d.parcelles || []).some(p => parcPoint(S.parcelles[p.id]))) h += '<div id="trt_map" class="mapbox noprint" style="height:260px;margin:10px 0"></div>';
     h += '<div class="ob"><div class="ob-l">🪣 Nombre de cuves</div><div class="ob-v" style="font-size:30px;font-weight:800">' + c.n + " <small>cuve" + (c.n > 1 ? "s" : "") + " de " + fmtN(Math.round(c.bCuve)) + " L</small></div></div>";
@@ -1958,7 +1981,13 @@ async function trtCancel() {
 }
 
 /* ---------- Registre phyto (cahier de culture) ---------- */
-const OEPP = { pommier: "MABSD", poirier: "PYUCO", prunier: "PRNDO", cerisier: "PRNAV", "pêcher": "PRNPS", pecher: "PRNPS", abricotier: "PRNAR", cognassier: "CYDOB", noyer: "IUGRE", vigne: "VITVI" };
+const OEPP = { pommier: "MABSD", poirier: "PYUCO", prunier: "PRNDO", cerisier: "PRNAV", "pêcher": "PRNPS", pecher: "PRNPS", abricotier: "PRNAR", cognassier: "CYDOB", noyer: "IUGRE", vigne: "VITVI",
+  "blé tendre": "TRZAX", "ble tendre": "TRZAX", "blé dur": "TRZDU", "ble dur": "TRZDU", "pois chiche": "CIEAR", luzerne: "MEDSA", orge: "HORVX",
+  "maïs": "ZEAMX", mais: "ZEAMX", tournesol: "HELAN", colza: "BRSNN", olivier: "OLVEU" };
+/* Liste proposée (saisie libre possible). Pas de code OEPP automatique pour pépinière, prairie, herbe, jachère : à saisir à la main si besoin. */
+const CULTURES = ["Pommier", "Poirier", "Prunier", "Cerisier", "Pêcher", "Abricotier", "Cognassier", "Noyer", "Vigne", "Olivier",
+  "Pépinière fruitière", "Pépinière (autre)", "Blé tendre", "Blé dur", "Orge", "Maïs", "Tournesol", "Colza", "Pois chiche", "Luzerne",
+  "Prairie / herbe", "Jachère"];
 const activeEnts = () => Object.entries(S.entreprises || {}).filter(([, e]) => e && e.actif !== false).sort(byName);
 function parcMissing(p) {
   const m = [];
@@ -2077,7 +2106,7 @@ VIEWS.regman = {
     h += '<label class="f">Produit</label><select class="in" id="rm_prod"><option value="">Choisir…</option>' + activeProducts().map(([id, p]) => '<option value="' + esc(id) + '"' + (f.prod === id ? " selected" : "") + ">" + esc(p.nom) + (p.amm ? " (AMM " + esc(p.amm) + ")" : "") + "</option>").join("") + "</select>";
     const pu = f.prod && S.produits[f.prod] ? U(S.produits[f.prod]) : "L";
     h += '<label class="f">Dose appliquée <small>(' + esc(pu) + '/ha, par hectare de parcelle)</small></label><input class="in" id="rm_dose" inputmode="decimal" value="' + esc(f.dose || "") + '">';
-    h += '<label class="f">Parcelles</label><div class="list">' + activeParcs().map(([id, p]) => '<label class="it" style="cursor:pointer;min-height:54px"><input type="checkbox" data-rmp="' + esc(id) + '" ' + (f.sel[id] ? "checked" : "") + ' style="width:24px;height:24px;accent-color:var(--acc)"><div class="main"><div class="nm" style="font-size:16px">' + esc(p.nom) + '</div><div class="meta">' + esc(p.culture || "") + '</div></div><div class="qty" style="font-size:15px">' + fmtN(p.surface) + " ha</div></label>").join("") + "</div>";
+    h += '<label class="f">Parcelles</label><div class="list">' + activeParcs().map(([id, p]) => '<label class="it" style="cursor:pointer;min-height:54px"><input type="checkbox" data-rmp="' + esc(id) + '" ' + (f.sel[id] ? "checked" : "") + ' style="width:24px;height:24px;accent-color:var(--acc)"><div class="main"><div class="nm" style="font-size:16px">' + esc(p.nom) + '</div><div class="meta">' + esc(p.culture || "") + '</div></div><div class="qty" style="font-size:15px">' + surfTxt(p) + "</div></label>").join("") + "</div>";
     h += '<label class="f">Cible <small>(facultatif)</small></label><input class="in" id="rm_cible" value="' + esc(f.cible || "") + '" placeholder="ex. Tavelure">';
     h += '<div class="row"><div><label class="f">Mode d\'application</label><input class="in" id="rm_mode" value="' + esc(f.mode || "Pulvérisation") + '"></div><div><label class="f">Applicateur</label><input class="in" id="rm_app" list="rm_users" value="' + esc(f.app || S.me.prenom) + '"><datalist id="rm_users">' + Object.values(S.users).map(u => "<option>" + esc(u.prenom) + "</option>").join("") + "</datalist></div></div>";
     h += '<label class="f">SIRET du bénéficiaire <small>(seulement en cas de prestation de service)</small></label><input class="in" id="rm_sb" inputmode="numeric" value="' + esc(f.sb || "") + '">';
@@ -2110,7 +2139,7 @@ VIEWS.ents = {
     if (!isDec()) return topbar("Entreprises", "home") + '<div class="note bad">Réservé aux décideurs.</div>';
     const es = Object.entries(S.entreprises || {}).sort((a, b) => (a[1].actif === false) - (b[1].actif === false) || byName(a, b));
     let h = topbar("Exploitations", "home") + "<h1>Exploitations du groupe</h1><p class=\"muted\">Chaque entreprise tient son registre sous son SIRET. Rattachez chaque parcelle à son entreprise ; elle est proposée automatiquement dans les ordres.</p>";
-    h += es.length ? '<div class="list">' + es.map(([id, e]) => { const ps = activeParcs().filter(([, p]) => p.entrepriseId === id); return '<button class="it" data-a="go" data-v="ent:' + esc(id) + '"' + (e.actif === false ? ' style="opacity:.5"' : "") + '><div class="main"><div class="nm">' + esc(e.nom) + '</div><div class="meta">SIRET ' + esc(e.siret) + " · " + ps.length + " parcelle(s) · " + fmtN(ps.reduce((t, [, p]) => t + (+p.surface || 0), 0)) + " ha</div></div><div>›</div></button>"; }).join("") + "</div>" : '<div class="note info">Aucune exploitation.</div>';
+    h += es.length ? '<div class="list">' + es.map(([id, e]) => { const ps = activeParcs().filter(([, p]) => p.entrepriseId === id); return '<button class="it" data-a="go" data-v="ent:' + esc(id) + '"' + (e.actif === false ? ' style="opacity:.5"' : "") + '><div class="main"><div class="nm">' + esc(e.nom) + '</div><div class="meta">SIRET ' + esc(e.siret) + " · " + ps.length + " parcelle(s) · " + fmtN(ps.reduce((t, [, p]) => t + pEff(p), 0)) + " ha</div></div><div>›</div></button>"; }).join("") + "</div>" : '<div class="note info">Aucune exploitation.</div>';
     const orphan = activeParcs().filter(([, p]) => !p.entrepriseId);
     if (orphan.length) h += '<div class="note warn" style="font-size:14px">' + orphan.length + " parcelle(s) sans exploitation : " + orphan.map(([, p]) => esc(p.nom)).join(", ") + ". Ouvrez-les pour les rattacher.</div>";
     h += '<div class="foot"><button class="btn pri full" data-a="go" data-v="ent">➕ Ajouter une exploitation</button></div>';
@@ -2127,11 +2156,11 @@ VIEWS.ent = {
       (id ? '<label class="tog"><span><b>Active</b></span><input type="checkbox" id="en_act" ' + (e.actif !== false ? "checked" : "") + "></label>" : "") +
       '<div style="margin-top:16px"><button class="btn pri full" data-a="saveEnt">Enregistrer</button></div>';
     if (!id) return h + form;
-    const ps = activeParcs().filter(([, p]) => p.entrepriseId === id), tot = ps.reduce((t, [, p]) => t + (+p.surface || 0), 0);
+    const ps = activeParcs().filter(([, p]) => p.entrepriseId === id), tot = ps.reduce((t, [, p]) => t + pEff(p), 0);
     h += '<p class="muted" style="margin-top:-6px">SIRET ' + esc(e.siret) + ' · <button class="link" style="padding:0" data-a="entEdit">Modifier</button></p>';
     if (S.f.edit) h += '<div class="card">' + form + "</div>";
     h += "<h2>Parcelles (" + ps.length + " · " + fmtN(tot) + " ha)</h2>";
-    h += ps.length ? '<div class="list">' + ps.map(([pid, p]) => '<button class="it" data-a="entParc" data-id="' + esc(pid) + '"><div class="main"><div class="nm">' + esc(p.nom) + '</div><div class="meta">' + esc([p.culture, p.variete].filter(Boolean).join(" · ") || "—") + (parcPoint(p) ? " · 🗺️" : "") + (parcMissing(p).length ? ' · <span style="color:var(--warn)">manque ' + esc(parcMissing(p).join(", ")) + "</span>" : "") + '</div></div><div class="qty">' + fmtN(p.surface) + " ha</div></button>").join("") + "</div>"
+    h += ps.length ? '<div class="list">' + ps.map(([pid, p]) => '<button class="it" data-a="entParc" data-id="' + esc(pid) + '"><div class="main"><div class="nm">' + esc(p.nom) + '</div><div class="meta">' + esc([p.culture, p.variete].filter(Boolean).join(" · ") || "—") + (parcPoint(p) ? " · 🗺️" : "") + (parcMissing(p).length ? ' · <span style="color:var(--warn)">manque ' + esc(parcMissing(p).join(", ")) + "</span>" : "") + '</div></div><div class="qty">' + surfTxt(p) + "</div></button>").join("") + "</div>"
       : '<div class="note info">Aucune parcelle pour cette exploitation.</div>';
     h += '<button class="btn pri full" style="margin-top:12px" data-a="entAddParc">➕ Ajouter une parcelle à ' + esc(e.nom) + "</button>";
     if (ps.some(([, p]) => parcPoint(p))) h += '<button class="btn full" style="margin-top:8px" data-a="go" data-v="carte">🗺️ Voir sur la carte</button>';
@@ -2393,6 +2422,7 @@ const A = {
   saveProduct: () => saveProduct(),
   doInventory: () => doInventory(),
   archiveProduct: () => archiveProduct(),
+  deleteProductForever: () => deleteProductForever(),
   orderOn: d => setOrder(d.id, true).then(() => render()),
   orderOff: d => setOrder(d.id, false).then(() => render()),
   flt: d => { S.f.flt = d.k; render(); },
