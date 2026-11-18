@@ -151,6 +151,16 @@ table.sh small{color:#444}
   table.sh th{-webkit-print-color-adjust:exact;print-color-adjust:exact}
 }
 @media (max-width:520px){ .sheet{padding:10px;font-size:12px} table.sh th,table.sh td{padding:4px} }
+
+.ordre .ob{display:flex;gap:12px;align-items:flex-start;padding:10px 0;border-bottom:1px solid var(--line)}
+.ordre .ob-l{flex:none;width:118px;font-weight:700;color:var(--muted);font-size:15px;padding-top:2px}
+.ordre .ob-v{flex:1;font-size:20px;font-weight:700;line-height:1.3}
+.ordre .ob-v small{font-size:14px;font-weight:400;color:var(--muted)}
+.ordre .ob-t{font-size:17px;font-weight:800;margin:14px 0 6px}
+table.obt td{font-size:20px;font-weight:700;padding:10px 8px}
+table.obt td small{font-weight:400}
+table.obt td.r{font-size:24px;white-space:nowrap}
+@media print{ .ordre .ob-v{font-size:14pt} table.obt td{font-size:13pt} table.obt td.r{font-size:15pt} details{display:none} }
 </style>
 </head>
 <body>
@@ -172,6 +182,7 @@ const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt
 const pad = n => String(n).padStart(2, "0");
 const today = () => { const d = new Date(); return d.getFullYear()+"-"+pad(d.getMonth()+1)+"-"+pad(d.getDate()); };
 const fmtDate = s => { if (!s) return ""; const [y,m,d] = String(s).slice(0,10).split("-"); return d+"/"+m+"/"+y; };
+const fmtD = n => (Math.round((+n || 0) * 10000) / 10000).toLocaleString("fr-FR", { maximumFractionDigits: 4 });
 const fmtN = n => (Math.round((+n || 0) * 100) / 100).toLocaleString("fr-FR", {maximumFractionDigits: 2});
 const parseN = s => { const v = parseFloat(String(s ?? "").replace(/\s/g,"").replace(",", ".")); return isFinite(v) ? v : NaN; };
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -280,9 +291,9 @@ function regIssues() {
 const regUrgent = () => regIssues().filter(i => i.lvl >= 2).length;
 
 function applyState(st) {
-  S.version = st.version; S.me = st.me; S.ephyMaj = st.ephyMaj || null; S.ephyInfo = st.ephyInfo || "";
+  S.version = st.version; S.me = st.me; S.ephyMaj = st.ephyMaj || null; S.ephyInfo = st.ephyInfo || ""; S.siret = st.siret || "";
   S.produits = st.produits || {}; S.mouvements = st.mouvements || {}; S.alertes = st.alertes || {}; S.users = st.users || {};
-  S.demandes = st.demandes || {};
+  S.demandes = st.demandes || {}; S.parcelles = st.parcelles || {}; S.pulves = st.pulves || {}; S.traitements = st.traitements || {}; S.entreprises = st.entreprises || {}; S.cmdLibres = st.commandesLibres || {};
 }
 async function reload() {
   const st = await api("get_state", { p_token: S.token });
@@ -567,13 +578,15 @@ function keyPress(k) {
 VIEWS.home = {
   live: true,
   html() {
-    const al = openAlerts().length + (isDec() ? regUrgent() + Object.values(S.demandes || {}).filter(d => d.statut === "faite").length : 0), cmd = openOrders().length;
+    const al = openAlerts().length + (isDec() ? regUrgent() + Object.values(S.demandes || {}).filter(d => d.statut === "faite").length : 0), cmd = openOrders().length + Object.keys(S.cmdLibres || {}).length;
     let h = topbar("Stock phyto");
     h += '<p class="muted" style="margin:0 0 14px">Certiphyto : <b>' + esc(S.me.certiphyto || "non renseigné") + "</b></p>";
     if (isDec()) {
       if (al) h += '<button class="big alert" data-a="go" data-v="alertes"><span class="ic">⚠️</span><span>' + al + " alerte" + (al > 1 ? "s" : "") + ' à traiter<span class="sub">Stock et réglementation</span></span></button>';
       h += '<button class="big pri" data-a="startPick" data-m="entree"><span class="ic">📥</span><span>Réception livraison<span class="sub">Entrer des produits dans le stock</span></span></button>';
       h += '<button class="big out" data-a="startPick" data-m="sortie"><span class="ic">📤</span><span>Sortie de produit<span class="sub">Je prends un produit</span></span></button>';
+      { const nt = Object.values(S.traitements || {}).filter(t => t.statut === "a_faire").length;
+        h += '<button class="big" data-a="go" data-v="trt"><span class="ic">🚜</span><span>Ordres de traitement<span class="sub">' + (nt ? nt + " à faire" : "Parcelles, pulvérisateurs, consignes") + "</span></span></button>"; }
       h += '<div class="grid2">' +
         '<button class="big" data-a="go" data-v="stock"><span class="ic">📦</span>Stock</button>' +
         '<button class="big" data-a="go" data-v="commandes"><span class="ic">🛒</span>Commandes' + (cmd ? '<span class="sub">' + cmd + " en cours</span>" : "") + "</button>" +
@@ -581,15 +594,21 @@ VIEWS.home = {
         '<button class="big" data-a="go" data-v="alertes"><span class="ic">⚠️</span>Alertes' + (al ? '<span class="sub">' + al + " à traiter</span>" : "") + "</button>" +
         '<button class="big" data-a="go" data-v="inv"><span class="ic">📝</span>Inventaire' + (store.get(INV_KEY) && Object.values((store.get(INV_KEY) || {}).items || {}).some(i => i.done) ? '<span class="sub">en cours</span>' : "") + "</button>" +
         '<button class="big" data-a="go" data-v="ephy"><span class="ic">📚</span>Données E-Phy</button>' +
+        '<button class="big" data-a="go" data-v="registre"><span class="ic">📒</span>Registre phyto</button>' +
+        '<button class="big" data-a="go" data-v="ents"><span class="ic">🏢</span>Entreprises</button>' +
         "</div>" + '<button class="big" style="margin-top:10px" data-a="go" data-v="print"><span class="ic">🖨️</span><span>Imprimer l\'état du stock<span class="sub">Stock, statuts E-Phy, personnes et n° Certiphyto</span></span></button>';
     } else {
       for (const [id, d] of Object.entries(S.demandes || {}).filter(([, d]) => d.statut === "ouverte" && d.userId === S.me.id)) {
         const nb = d.produits ? d.produits.length : activeProducts().length;
         h += '<button class="big pri" data-a="goReq" data-id="' + esc(id) + '"><span class="ic">📝</span><span>Inventaire demandé<span class="sub">par ' + esc(d.creePar) + " · " + nb + " produit(s)" + (d.echeance ? " · avant le " + fmtDate(d.echeance) : "") + (store.get(INV_KEY + "." + id) ? " · commencé" : "") + "</span></span></button>";
       }
+      for (const [id, t] of Object.entries(S.traitements || {}).filter(([, t]) => t.statut === "a_faire").sort((a, b) => String(a[1].datePrevue).localeCompare(String(b[1].datePrevue)))) {
+        h += '<button class="big pri" data-a="go" data-v="trtview:' + esc(id) + '"><span class="ic">🚜</span><span>Traitement à faire' + (t.datePrevue < today() ? " (en retard)" : "") + '<span class="sub">' + fmtDate(t.datePrevue) + " · " + esc(trtTitle(t)) + " · " + ((t.data.calc || {}).n || "?") + " cuve(s)</span></span></button>";
+      }
       h += '<button class="big out" style="min-height:110px;font-size:22px" data-a="startPick" data-m="sortie"><span class="ic">📤</span><span>Sortie de produit<span class="sub">Je prends un produit</span></span></button>';
       h += '<div class="grid2"><button class="big" data-a="go" data-v="stock"><span class="ic">📦</span>Voir le stock</button>' +
-        '<button class="big" data-a="go" data-v="mes"><span class="ic">🕘</span>Mes saisies</button></div>';
+        '<button class="big" data-a="go" data-v="mes"><span class="ic">🕘</span>Mes saisies</button></div>' +
+        '<button class="big" data-a="go" data-v="trt"><span class="ic">🚜</span><span>Mes traitements</span></button>';
     }
     if (canAdmin()) h += '<div class="foot"><button class="btn" data-a="go" data-v="users">⚙️ Gérer les utilisateurs</button></div>';
     h += '<div class="foot"><button class="btn ghost" data-a="logout">Changer d\'utilisateur</button></div>';
@@ -606,12 +625,15 @@ VIEWS.pick = {
     const back = m === "assoc" ? "alertes" : m === "cmd" ? "commandes" : "home";
     let h = topbar(m === "entree" ? "Réception" : m === "sortie" ? "Sortie" : "Choisir", back) + "<h1>" + PICK_TITLES[m] + "</h1>";
     if (S.f.pendingEan) h += '<div class="note info">Code-barre <b>' + esc(S.f.pendingEan) + "</b> : choisissez le produit auquel l'associer.</div>";
+    if (m === "entree" && Object.keys(S.cmdLibres || {}).length) h += '<div class="card" style="border:2px solid #1f4f99"><b>Commandes de nouveaux produits</b><p class="muted" style="margin:4px 0 8px;font-size:14px">Touchez le produit livré : il sera créé puis la commande clôturée.</p>' +
+      Object.entries(S.cmdLibres).map(([id, c]) => '<button class="btn full" style="margin-top:6px;justify-content:flex-start" data-a="clRecv" data-id="' + esc(id) + '">📦 ' + esc(c.nom) + (c.note ? ' <small class="muted">· ' + esc(c.note) + "</small>" : "") + "</button>").join("") + "</div>";
     h += '<div class="row" style="gap:8px"><div class="search"><span class="mag">🔍</span><input class="in" id="q" placeholder="Nom ou code-barre" autocomplete="off" value="' + esc(S.f.q || "") + '"></div>' +
       '<button class="btn pri" style="flex:none;min-height:52px;font-size:22px" data-a="scanPick" aria-label="Scanner">📷</button></div>';
     h += '<p class="muted" style="font-size:13px;margin:6px 2px 12px">📷 = scanner avec le téléphone · avec une douchette, scannez directement dans le champ</p>';
     h += '<div id="plist"></div>';
     if (m === "sortie") h += '<div class="foot"><button class="btn full" data-a="unknown">❓ Je ne trouve pas le produit</button></div>';
     if (m === "entree") h += '<div class="foot"><button class="btn full" data-a="newprodFromPick">➕ Nouveau produit</button></div>';
+    if (m === "cmd") h += '<div class="foot"><button class="btn full" data-a="clNew">❓ Produit pas encore dans la liste</button></div>';
     return h;
   },
   after() {
@@ -858,6 +880,7 @@ async function createProduct() {
   const res = await act("save_produit", { p_id: null, ...d }, "Produit créé : " + d.p_nom);
   if (!res) return;
   const id = res.r;
+  if (S.f.cmdLibre) { const cl = S.f.cmdLibre; await act("cmd_libre_statut", { p_id: cl, p_statut: "recue", p_produit_id: id }, "Commande clôturée"); }
   if (!S.produits[id]) return go("stock");
   if (S.f.then === "entree") go("qty", { mode: "entree", pid: id, unit: d.p_contenance ? "bidons" : "vol", n: "", date: today() });
   else go("produit", { pid: id });
@@ -1354,6 +1377,576 @@ async function rqSend() {
   if (res) go("inv");
 }
 
+/* =====================================================================
+   PARCELLES, PULVÉRISATEURS, ORDRES DE TRAITEMENT
+   ===================================================================== */
+const byName = (a, b) => norm(a[1].nom).localeCompare(norm(b[1].nom));
+const activeParcs = () => Object.entries(S.parcelles || {}).filter(([, p]) => p && p.actif !== false).sort(byName);
+const activePulvs = () => Object.entries(S.pulves || {}).filter(([, p]) => p && p.actif !== false).sort(byName);
+const doseUnits = p => { const u = U(p); return [["ha", u + "/ha"], ["hL", u + "/hL"], ["pct", "% de bouillie"]]; };
+const doseLabel = (du, u) => du === "ha" ? u + "/ha" : du === "hL" ? u + "/hL" : "%";
+
+/* ---- Calcul d'un ordre ----
+   Surface traitée = Σ surfaces × 0,5 si un rang sur deux (même concentration dans la cuve).
+   Dose par hectare (tous rangs) : /ha → dose ; /hL → dose × max(V, 1000) / 100 (règle SudArbo) ; % → dose/100 × V.
+   Quantités totales = dose/ha × surface traitée ; cuves égales = ⌈bouillie / capacité⌉. */
+function trtCalc(o) {
+  const errs = [], warns = [];
+  const surf = o.parcelles.reduce((s, p) => s + (+p.surface || 0), 0);
+  const seff = surf * (o.r2 ? 0.5 : 1);
+  const V = +o.volumeHa, cap = +o.capacite;
+  if (!o.parcelles.length) errs.push("Choisissez au moins une parcelle.");
+  if (!(cap > 0)) errs.push("Choisissez un pulvérisateur.");
+  if (!(V > 0)) errs.push("Indiquez le volume de bouillie par hectare.");
+  if (!o.produits.length) errs.push("Ajoutez au moins un produit.");
+  const B = seff * (V > 0 ? V : 0);
+  const n = cap > 0 && B > 0 ? Math.ceil(B / cap - 1e-9) : 0;
+  const bCuve = n ? B / n : 0;
+  const prods = o.produits.map(x => {
+    const p = S.produits[x.produitId] || { nom: x.nom, unite: x.unite };
+    const u = x.unite || U(p), d = parseN(x.dose);
+    let qha = NaN, how = "";
+    if (!(d > 0)) errs.push("Dose manquante pour « " + (p.nom || x.nom) + " ».");
+    else if (x.du === "ha") { qha = d; how = fmtD(d) + " " + u + "/ha"; }
+    else if (x.du === "hL") {
+      qha = d * Math.max(V, 1000) / 100;
+      how = fmtD(d) + " " + u + "/hL" + (V < 1000 ? " → volume < 1000 L/ha : dose/ha = 10 × dose/hL = " + fmtD(qha) + " " + u + "/ha" : " × " + fmtN(V / 100) + " hL/ha = " + fmtD(qha) + " " + u + "/ha");
+    } else { qha = d / 100 * V; how = fmtD(d) + " % × " + fmtN(V) + " L/ha = " + fmtD(qha) + " " + u + "/ha"; }
+    const max = parseN(x.maxHa);
+    if (qha > 0 && max > 0 && qha > max + 1e-9) warns.push("« " + (p.nom || x.nom) + " » : " + fmtN(qha) + " " + u + "/ha dépasse la dose maximale saisie (" + fmtD(max) + " " + u + "/ha).");
+    const qtot = qha > 0 ? qha * seff : NaN;
+    return { produitId: x.produitId, nom: p.nom || x.nom, unite: u, contenant: p.contenant || "bidon", contenance: +p.contenance || null,
+      dose: d, du: x.du, maxHa: max > 0 ? max : null, qha, how, qtot, qcuve: n ? qtot / n : NaN, qhaApplique: qha > 0 ? qha * (o.r2 ? 0.5 : 1) : NaN };
+  });
+  const liq = prods.filter(x => x.unite === "L" && x.qcuve > 0).reduce((s, x) => s + x.qcuve, 0);
+  const eauCuve = bCuve - liq;
+  if (n && eauCuve < 0) errs.push("Les produits liquides dépassent le volume de la cuve : vérifiez les doses ou le volume/ha.");
+  if (o.r2 && V > 0) warns.push("Un rang sur deux : chaque passage applique une demi-dose par hectare ; les autres rangs sont couverts au passage suivant. Interdit avec les matériels anti-dérive qui doivent passer dans tous les rangs.");
+  return { surf, seff, V, cap, B, n, bCuve, eauCuve, prods, errs, warns, ok: !errs.length };
+}
+function qtyTxt(q, u) { return (u === "L" && q < 1) ? fmtN(q * 1000) + " mL" : (u === "kg" && q < 1) ? fmtN(q * 1000) + " g" : fmtN(q) + " " + u; }
+function calcHtml(c, compact) {
+  if (!c.ok) return '<div class="note warn">' + c.errs.map(esc).join("<br>") + "</div>";
+  let h = '<div class="card" style="border:2px solid var(--acc)">';
+  h += '<div class="row" style="flex-wrap:wrap;gap:6px 14px;font-size:15px">' +
+    "<div>Surface : <b>" + fmtN(c.surf) + " ha</b>" + (c.seff !== c.surf ? " → traitée <b>" + fmtN(c.seff) + " ha</b>" : "") + "</div>" +
+    "<div>Bouillie : <b>" + fmtN(Math.round(c.B)) + " L</b></div></div>";
+  h += '<div style="font-size:24px;font-weight:800;margin:10px 0">' + c.n + " cuve" + (c.n > 1 ? "s" : "") + " de " + fmtN(Math.round(c.bCuve)) + " L</div>";
+  h += '<table class="sh" style="font-size:15px"><thead><tr><th>Par cuve</th><th class="r">Quantité</th></tr></thead><tbody>';
+  h += "<tr><td>💧 Eau</td><td class=\"r\"><b>" + fmtN(Math.round(c.eauCuve)) + " L</b></td></tr>";
+  for (const p of c.prods) h += "<tr><td>" + esc(p.nom) + "</td><td class=\"r\"><b>" + qtyTxt(p.qcuve, p.unite) + "</b>" + (p.contenance ? "<br><small>≈ " + fmtN(p.qcuve / p.contenance) + " " + ctw(p, p.qcuve / p.contenance) + "</small>" : "") + "</td></tr>";
+  h += "</tbody></table>";
+  if (!compact) {
+    h += '<details style="margin-top:10px"><summary>Détail du calcul et totaux</summary><div style="font-size:14px;margin-top:6px">';
+    for (const p of c.prods) h += "<div style=\"margin-top:6px\"><b>" + esc(p.nom) + "</b> : " + esc(p.how) + " · total <b>" + qtyTxt(p.qtot, p.unite) + "</b>" + (c.seff !== c.surf ? " (soit " + fmtD(p.qhaApplique) + " " + p.unite + " par ha de parcelle)" : "") + "</div>";
+    h += "<div style=\"margin-top:6px\">Volume : " + fmtN(c.V) + " L/ha × " + fmtN(c.seff) + " ha = " + fmtN(Math.round(c.B)) + " L, cuve de " + fmtN(c.cap) + " L → " + c.n + " cuve(s) égales.</div></div></details>";
+  }
+  h += "</div>";
+  if (c.warns.length) h += '<div class="note warn">' + c.warns.map(esc).join("<br>") + "</div>";
+  return h;
+}
+
+/* ---------- Parcelles ---------- */
+VIEWS.parcs = {
+  live: true,
+  html() {
+    const ps = Object.entries(S.parcelles || {}).sort((a, b) => (a[1].actif === false) - (b[1].actif === false) || byName(a, b));
+    const tot = activeParcs().reduce((s, [, p]) => s + (+p.surface || 0), 0);
+    let h = topbar("Parcelles", "trt") + "<h1>Parcelles</h1><p class=\"muted\">" + activeParcs().length + " parcelle(s) · " + fmtN(tot) + " ha</p>";
+    h += ps.length ? '<div class="list">' + ps.map(([id, p]) => '<button class="it" data-a="go" data-v="parc:' + esc(id) + '"' + (p.actif === false ? ' style="opacity:.5"' : "") + '><div class="main"><div class="nm">' + esc(p.nom) + (p.actif === false ? ' <span class="badge adj">Archivée</span>' : "") + '</div><div class="meta">' + esc([p.culture, p.variete].filter(Boolean).join(" · ") || "—") + (parcMissing(p).length ? ' · <span style="color:var(--warn)">registre : manque ' + esc(parcMissing(p).join(", ")) + "</span>" : "") + '</div></div><div class="qty">' + fmtN(p.surface) + " ha</div></button>").join("") + "</div>"
+      : '<div class="note info">Aucune parcelle. Ajoutez-les une fois : elles serviront à chaque ordre de traitement.</div>';
+    if (isDec()) h += '<div class="foot"><button class="btn pri full" data-a="go" data-v="parc">➕ Ajouter une parcelle</button></div>';
+    return h;
+  }
+};
+VIEWS.parc = {
+  html() {
+    const id = S.f.pid, p = id ? (S.parcelles[id] || {}) : {};
+    let h = topbar(id ? "Parcelle" : "Nouvelle parcelle", "parcs") + "<h1>" + (id ? esc(p.nom) : "Nouvelle parcelle") + "</h1>";
+    h += '<label class="f">Nom</label><input class="in" id="pa_nom" value="' + esc(p.nom || "") + '" placeholder="ex. Les Combes – bloc 3">';
+    h += '<label class="f">Surface <small>(hectares)</small></label><input class="in" id="pa_surf" inputmode="decimal" value="' + esc(p.surface ?? "") + '" placeholder="ex. 1,35">';
+    h += '<label class="f">Culture</label><input class="in" id="pa_cult" list="cultures" value="' + esc(p.culture || "") + '" placeholder="ex. Pommier"><datalist id="cultures"><option>Pommier</option><option>Poirier</option><option>Prunier</option><option>Cerisier</option><option>Pêcher</option><option>Abricotier</option></datalist>';
+    h += '<label class="f">Variété <small>(facultatif)</small></label><input class="in" id="pa_var" value="' + esc(p.variete || "") + '">';
+    h += '<label class="f">Entreprise du groupe</label><select class="in" id="pa_ent"><option value="">—</option>' + activeEnts().map(([eid, e]) => '<option value="' + esc(eid) + '"' + ((p.entrepriseId || (!id && activeEnts().length === 1 ? eid : "")) === eid ? " selected" : "") + ">" + esc(e.nom) + "</option>").join("") + "</select>" +
+      (activeEnts().length ? "" : '<p class="muted" style="font-size:13px">Aucune entreprise : ajoutez-les dans Registre → Entreprises.</p>');
+    h += '<label class="f">Code culture OEPP <small>(registre ; ex. MABSD pommier, PYUCO poirier, PRNDO prunier)</small></label><input class="in" id="pa_oepp" maxlength="6" style="text-transform:uppercase" value="' + esc(p.codeOepp || "") + '">';
+    h += '<label class="tog"><span><b>Conduite en agriculture biologique</b></span><input type="checkbox" id="pa_bio" ' + (p.bio ? "checked" : "") + "></label>";
+    h += '<h2>Localisation (registre)</h2><p class="muted" style="font-size:13px;margin-top:0">Référence PAC (RPG) : îlot, n° de parcelle et code INSEE de la commune. Sinon, coordonnées GPS.</p>';
+    h += '<div class="row"><div><label class="f">Îlot RPG</label><input class="in" id="pa_ilot" maxlength="4" value="' + esc(p.ilot || "") + '" placeholder="ex. 12"></div><div><label class="f">N° parcelle</label><input class="in" id="pa_num" maxlength="3" value="' + esc(p.numParcelle || "") + '" placeholder="ex. 3"></div><div><label class="f">INSEE</label><input class="in" id="pa_insee" maxlength="5" value="' + esc(p.insee || "") + '" placeholder="34154"></div></div>';
+    h += '<div class="row"><div><label class="f">Latitude</label><input class="in" id="pa_lat" inputmode="decimal" value="' + esc(p.lat ?? "") + '" placeholder="43.6"></div><div><label class="f">Longitude</label><input class="in" id="pa_lon" inputmode="decimal" value="' + esc(p.lon ?? "") + '" placeholder="3.98"></div><button class="btn" style="flex:none;align-self:flex-end;min-height:52px" data-a="parcGps">📍</button></div>';
+    h += '<p class="muted" style="font-size:13px">📍 = position actuelle du téléphone (à faire debout dans la parcelle).</p>';
+    h += '<label class="f">Notes <small>(facultatif : accès, voisinage, ZNT…)</small></label><input class="in" id="pa_notes" value="' + esc(p.notes || "") + '">';
+    if (id) h += '<label class="tog"><span><b>Parcelle active</b><br><small class="muted">Décocher pour l\'archiver (arrachée, vendue…)</small></span><input type="checkbox" id="pa_act" ' + (p.actif !== false ? "checked" : "") + "></label>";
+    h += '<div style="margin-top:16px"><button class="btn pri full" data-a="saveParc">Enregistrer</button></div>';
+    return h;
+  }
+};
+async function saveParc() {
+  const surf = parseN($("#pa_surf").value);
+  if (!$("#pa_nom").value.trim()) return toast("Indiquez le nom.", "err");
+  if (!(surf > 0)) return toast("Indiquez la surface en hectares.", "err");
+  const lat = parseN($("#pa_lat").value), lon = parseN($("#pa_lon").value);
+  let oepp = $("#pa_oepp").value.trim().toUpperCase();
+  if (!oepp && OEPP[norm($("#pa_cult").value)]) oepp = OEPP[norm($("#pa_cult").value)];
+  const r = await act("save_parcelle", { p_id: S.f.pid || null, p_nom: $("#pa_nom").value, p_surface: surf, p_culture: $("#pa_cult").value, p_variete: $("#pa_var").value,
+    p_notes: $("#pa_notes").value, p_actif: S.f.pid ? $("#pa_act").checked : true,
+    p_ilot: $("#pa_ilot").value, p_num_parcelle: $("#pa_num").value, p_insee: $("#pa_insee").value,
+    p_lat: isFinite(lat) ? lat : null, p_lon: isFinite(lon) ? lon : null, p_code_oepp: oepp, p_bio: $("#pa_bio").checked,
+    p_entreprise_id: $("#pa_ent").value || null }, "Parcelle enregistrée");
+  if (r) go("parcs");
+}
+
+/* ---------- Pulvérisateurs ---------- */
+VIEWS.pulvs = {
+  live: true,
+  html() {
+    const ps = Object.entries(S.pulves || {}).sort((a, b) => (a[1].actif === false) - (b[1].actif === false) || byName(a, b));
+    let h = topbar("Pulvérisateurs", "trt") + "<h1>Pulvérisateurs</h1>";
+    h += ps.length ? '<div class="list">' + ps.map(([id, p]) => '<button class="it" data-a="go" data-v="pulv:' + esc(id) + '"' + (p.actif === false ? ' style="opacity:.5"' : "") + '><div class="main"><div class="nm">' + esc(p.nom) + (p.actif === false ? ' <span class="badge adj">Archivé</span>' : "") + '</div><div class="meta">' + (p.volumeHa ? "Réglage habituel : " + fmtN(p.volumeHa) + " L/ha" : "Volume/ha non renseigné") + '</div></div><div class="qty">' + fmtN(p.capacite) + " L</div></button>").join("") + "</div>"
+      : '<div class="note info">Aucun pulvérisateur. Ajoutez ceux de l\'entreprise avec la capacité de leur cuve.</div>';
+    if (isDec()) h += '<div class="foot"><button class="btn pri full" data-a="go" data-v="pulv">➕ Ajouter un pulvérisateur</button></div>';
+    return h;
+  }
+};
+VIEWS.pulv = {
+  html() {
+    const id = S.f.pid, p = id ? (S.pulves[id] || {}) : {};
+    let h = topbar(id ? "Pulvérisateur" : "Nouveau pulvérisateur", "pulvs") + "<h1>" + (id ? esc(p.nom) : "Nouveau pulvérisateur") + "</h1>";
+    h += '<label class="f">Nom</label><input class="in" id="pv_nom" value="' + esc(p.nom || "") + '" placeholder="ex. Atomiseur 1500 L">';
+    h += '<label class="f">Capacité utile de la cuve <small>(litres)</small></label><input class="in" id="pv_cap" inputmode="decimal" value="' + esc(p.capacite ?? "") + '" placeholder="ex. 1500">';
+    h += '<label class="f">Volume de bouillie habituel <small>(L/ha, en passant dans tous les rangs ; modifiable à chaque ordre)</small></label><input class="in" id="pv_vha" inputmode="decimal" value="' + esc(p.volumeHa ?? "") + '" placeholder="ex. 400">';
+    h += '<label class="f">Notes <small>(facultatif : buses, réglages, anti-dérive…)</small></label><input class="in" id="pv_notes" value="' + esc(p.notes || "") + '">';
+    if (id) h += '<label class="tog"><span><b>En service</b></span><input type="checkbox" id="pv_act" ' + (p.actif !== false ? "checked" : "") + "></label>";
+    h += '<div style="margin-top:16px"><button class="btn pri full" data-a="savePulv">Enregistrer</button></div>';
+    return h;
+  }
+};
+async function savePulv() {
+  const cap = parseN($("#pv_cap").value), vha = parseN($("#pv_vha").value);
+  if (!$("#pv_nom").value.trim()) return toast("Indiquez le nom.", "err");
+  if (!(cap > 0)) return toast("Indiquez la capacité de la cuve en litres.", "err");
+  const r = await act("save_pulve", { p_id: S.f.pid || null, p_nom: $("#pv_nom").value, p_capacite: cap, p_volume_ha: vha > 0 ? vha : null,
+    p_notes: $("#pv_notes").value, p_actif: S.f.pid ? $("#pv_act").checked : true }, "Pulvérisateur enregistré");
+  if (r) go("pulvs");
+}
+
+/* ---------- Liste des ordres ---------- */
+const trtTitle = t => (t.data.parcelles || []).map(p => p.nom).join(", ");
+const opName = t => t.operateurId ? ((S.users[t.operateurId] || {}).prenom || "opérateur") : "n'importe quel opérateur";
+function trtRow(id, t) {
+  const st = t.statut === "a_faire" ? (t.datePrevue < today() ? '<span class="badge neg">En retard</span>' : '<span class="badge cmd">À faire</span>') : t.statut === "fait" ? '<span class="badge in">Réalisé</span>' : '<span class="badge adj">Annulé</span>';
+  const c = t.data.calc || {};
+  return '<button class="it" data-a="go" data-v="trtview:' + esc(id) + '"><div class="main"><div class="nm" style="font-size:16px">' + st + " " + esc(trtTitle(t)) + '</div><div class="meta">' +
+    (t.statut === "fait" ? "Fait le " + fmtDate(t.faitLe) + " par " + esc(t.faitPar) : "Prévu le " + fmtDate(t.datePrevue) + " · " + esc(opName(t))) +
+    " · " + esc((t.data.produits || []).map(p => p.nom).join(" + ")) + '</div></div><div class="qty">' + (c.n || "?") + " cuve" + ((c.n || 0) > 1 ? "s" : "") + "<small>" + esc((t.data.pulve || {}).nom || "") + "</small></div></button>";
+}
+VIEWS.trt = {
+  live: true,
+  html() {
+    const all = Object.entries(S.traitements || {});
+    const todo = all.filter(([, t]) => t.statut === "a_faire").sort((a, b) => String(a[1].datePrevue).localeCompare(String(b[1].datePrevue)));
+    const done = all.filter(([, t]) => t.statut !== "a_faire").sort((a, b) => String(b[1].faitLe || b[1].datePrevue).localeCompare(String(a[1].faitLe || a[1].datePrevue))).slice(0, 30);
+    let h = topbar("Traitements", "home") + "<h1>Ordres de traitement</h1>";
+    if (isDec()) {
+      h += '<button class="big pri" data-a="go" data-v="trtnew"><span class="ic">➕</span><span>Nouvel ordre de traitement</span></button>';
+      h += '<div class="grid2"><button class="big" data-a="go" data-v="parcs"><span class="ic">🗺️</span>Parcelles<span class="sub">' + activeParcs().length + " · " + fmtN(activeParcs().reduce((s, [, p]) => s + (+p.surface || 0), 0)) + ' ha</span></button>' +
+        '<button class="big" data-a="go" data-v="pulvs"><span class="ic">🚜</span>Pulvérisateurs<span class="sub">' + activePulvs().length + "</span></button>" +
+        '<button class="big" data-a="go" data-v="registre"><span class="ic">📒</span>Registre phyto</button><button class="big" data-a="go" data-v="ents"><span class="ic">🏢</span>Entreprises</button></div>';
+    }
+    h += "<h2>À faire</h2>" + (todo.length ? '<div class="list">' + todo.map(([id, t]) => trtRow(id, t)).join("") + "</div>" : '<div class="note ok">Aucun traitement à faire.</div>');
+    if (done.length) h += "<h2>Historique</h2><div class=\"list\">" + done.map(([id, t]) => trtRow(id, t)).join("") + "</div>";
+    return h;
+  }
+};
+
+/* ---------- Nouvel ordre ---------- */
+function trtOrder() {
+  const f = S.f;
+  if (!f.o) f.o = { date: today(), op: "", parc: {}, pulve: "", vha: "", r2: false, prods: [], note: "", bbch: "", cible: "", mode: "Pulvérisation", sb: "", ent: "", horaires: false };
+  return f.o;
+}
+function trtInput(o) {
+  const pv = S.pulves[o.pulve] || {};
+  return {
+    parcelles: Object.keys(o.parc).filter(k => o.parc[k] && S.parcelles[k]).map(k => ({ id: k, nom: S.parcelles[k].nom, surface: +S.parcelles[k].surface, culture: S.parcelles[k].culture, variete: S.parcelles[k].variete })),
+    r2: !!o.r2, volumeHa: parseN(o.vha), capacite: +pv.capacite || 0,
+    produits: o.prods.map(x => ({ produitId: x.pid, nom: (S.produits[x.pid] || {}).nom, unite: U(S.produits[x.pid]), dose: x.dose, du: x.du, maxHa: x.max }))
+  };
+}
+function trtCalcRefresh() { const el = $("#trt_calc"); if (el) el.innerHTML = calcHtml(trtCalc(trtInput(trtOrder()))); }
+VIEWS.trtnew = {
+  html() {
+    if (!isDec()) return topbar("Ordre", "trt") + '<div class="note bad">Réservé aux décideurs.</div>';
+    const o = trtOrder();
+    if (!activeParcs().length || !activePulvs().length) return topbar("Nouvel ordre", "trt") + '<div class="note warn">Ajoutez d\'abord vos ' + (!activeParcs().length ? "parcelles" : "") + (!activeParcs().length && !activePulvs().length ? " et vos " : "") + (!activePulvs().length ? "pulvérisateurs" : "") + ".</div>" +
+      '<div class="grid2"><button class="big" data-a="go" data-v="parcs">🗺️ Parcelles</button><button class="big" data-a="go" data-v="pulvs">🚜 Pulvérisateurs</button></div>';
+    let h = topbar("Nouvel ordre", "trt") + "<h1>Nouvel ordre de traitement</h1>";
+    // date + opérateur
+    const ops = Object.entries(S.users).filter(([, u]) => u && u.actif !== false).sort((a, b) => norm(a[1].prenom).localeCompare(norm(b[1].prenom)));
+    h += '<div class="row"><div><label class="f">Date prévue</label><input class="in" type="date" id="o_date" value="' + esc(o.date) + '"></div>' +
+      '<div><label class="f">Opérateur</label><select class="in" id="o_op"><option value="">N\'importe lequel</option>' + ops.map(([id, u]) => '<option value="' + esc(id) + '"' + (o.op === id ? " selected" : "") + ">" + esc(u.prenom) + "</option>").join("") + "</select></div></div>";
+    // parcelles
+    const selSurf = Object.keys(o.parc).filter(k => o.parc[k] && S.parcelles[k]).reduce((s, k) => s + (+S.parcelles[k].surface || 0), 0);
+    h += '<label class="f">Parcelles <small id="o_psum">(' + fmtN(selSurf) + ' ha sélectionnés)</small></label><div class="list">' + activeParcs().map(([id, p]) =>
+      '<label class="it" style="cursor:pointer;min-height:54px"><input type="checkbox" data-opar="' + esc(id) + '" ' + (o.parc[id] ? "checked" : "") + ' style="width:24px;height:24px;accent-color:var(--acc)"><div class="main"><div class="nm" style="font-size:16px">' + esc(p.nom) + '</div><div class="meta">' + esc([p.culture, p.variete].filter(Boolean).join(" · ")) + '</div></div><div class="qty" style="font-size:15px">' + fmtN(p.surface) + " ha</div></label>").join("") + "</div>";
+    // pulvé
+    h += '<label class="f">Pulvérisateur</label><div class="grid2">' + activePulvs().map(([id, p]) =>
+      '<button class="big" style="min-height:64px' + (o.pulve === id ? ";outline:3px solid var(--acc)" : "") + '" data-a="oPulve" data-id="' + esc(id) + '">' + esc(p.nom) + '<span class="sub">' + fmtN(p.capacite) + " L" + (p.volumeHa ? " · " + fmtN(p.volumeHa) + " L/ha" : "") + "</span></button>").join("") + "</div>";
+    h += '<div class="row" style="margin-top:4px"><div><label class="f">Volume de bouillie <small>(L/ha, tous rangs)</small></label><input class="in" id="o_vha" inputmode="decimal" value="' + esc(o.vha) + '" placeholder="ex. 400"></div></div>';
+    h += '<label class="tog card" style="margin-top:12px"><span><b>Un rang sur deux</b><br><small class="muted">Même concentration en cuve, moitié de surface traitée à ce passage</small></span><input type="checkbox" id="o_r2" ' + (o.r2 ? "checked" : "") + "></label>";
+    // produits
+    h += '<label class="f">Produits</label>';
+    h += o.prods.map((x, i) => {
+      const p = S.produits[x.pid] || {}, r = regStatus(p);
+      return '<div class="card"><div class="row" style="align-items:flex-start"><div><b>' + esc(p.nom || "?") + "</b> " + regBadge(p) + '<div class="muted" style="font-size:13px">Stock : ' + fmtN(+p.stock || 0) + " " + esc(U(p)) + (r.date ? " · utilisation jusqu'au " + fmtDate(r.date) : "") + '</div></div><button class="btn sm ghost" style="flex:none" data-a="oDelProd" data-i="' + i + '">✕</button></div>' +
+        '<div class="row" style="margin-top:8px"><input class="in" inputmode="decimal" placeholder="Dose" data-odose="' + i + '" value="' + esc(x.dose) + '">' +
+        '<select class="in" data-odu="' + i + '">' + doseUnits(p).map(([k, l]) => '<option value="' + k + '"' + (x.du === k ? " selected" : "") + ">" + esc(l) + "</option>").join("") + "</select></div>" +
+        '<input class="in" style="margin-top:8px;font-size:15px;min-height:44px" inputmode="decimal" placeholder="Dose max autorisée en ' + esc(U(p)) + '/ha (facultatif, pour contrôle)" data-omax="' + i + '" value="' + esc(x.max || "") + '"></div>';
+    }).join("");
+    h += '<button class="btn full" data-a="oAddProd">➕ Ajouter un produit</button>';
+    // calcul
+    h += '<h2>Préparation</h2><div id="trt_calc"></div>';
+    { const ents = activeEnts();
+      if (!o.ent) { const fromParc = Object.keys(o.parc).filter(k => o.parc[k] && S.parcelles[k]).map(k => S.parcelles[k].entrepriseId).find(Boolean); o.ent = fromParc || (ents.length === 1 ? ents[0][0] : ""); }
+      h += '<label class="f">Entreprise (registre)</label><select class="in" id="o_ent"><option value="">— choisir —</option>' + ents.map(([id, e]) => '<option value="' + esc(id) + '"' + (o.ent === id ? " selected" : "") + ">" + esc(e.nom) + " · " + esc(e.siret) + "</option>").join("") + "</select>"; }
+    h += '<label class="tog card" style="margin-top:12px"><span><b>Noter les horaires</b><br><small class="muted">L\'opérateur devra indiquer l\'heure de début et de fin (ex. traitement en floraison)</small></span><input type="checkbox" id="o_hor" ' + (o.horaires ? "checked" : "") + "></label>";
+    h += '<details class="card" style="margin-top:12px"' + (o.bbch || o.cible || o.sb ? " open" : "") + '><summary><b>Registre</b> : stade, cible, prestation <small class="muted">(facultatif)</small></summary>' +
+      '<div class="row"><div><label class="f">Stade BBCH</label><input class="in" id="o_bbch" inputmode="numeric" maxlength="2" placeholder="ex. 57" value="' + esc(o.bbch) + '"></div><div><label class="f">Cible</label><input class="in" id="o_cible" placeholder="ex. Tavelure" value="' + esc(o.cible) + '"></div></div>' +
+      '<label class="f">Mode d\'application</label><input class="in" id="o_mode" value="' + esc(o.mode || "Pulvérisation") + '">' +
+      '<label class="f">SIRET du bénéficiaire <small>(seulement si prestation de service)</small></label><input class="in" id="o_sb" inputmode="numeric" value="' + esc(o.sb) + '"></details>';
+    { const ip = trtInput(o), w = [];
+      ip.parcelles.forEach(p => { const m = parcMissing(S.parcelles[p.id] || {}).filter(x => x !== "entreprise"); if (m.length) w.push("parcelle « " + p.nom + " » : " + m.join(", ")); });
+      ip.parcelles.forEach(p => { const pe = (S.parcelles[p.id] || {}).entrepriseId; if (o.ent && pe && pe !== o.ent) w.push("« " + p.nom + " » appartient à " + ((S.entreprises[pe] || {}).nom || "une autre entreprise") + " (le registre sera au nom de l'entreprise choisie)"); });
+      o.prods.forEach(x => { const p = S.produits[x.pid] || {}; if (!/^\d{7}$/.test(String((p.ephy && p.ephy.amm) || p.amm || "").replace(/\D/g, ""))) w.push("« " + (p.nom || "?") + " » : n° AMM"); });
+      if (w.length) h += '<div class="note warn" style="font-size:14px">Registre incomplet : ' + w.map(esc).join(" · ") + "</div>"; }
+    h += '<label class="f">Consignes pour l\'opérateur <small>(facultatif)</small></label><textarea class="in" id="o_note" rows="2" placeholder="ex. buses antidérive, vent < 19 km/h, commencer par le bas">' + esc(o.note) + "</textarea>";
+    h += '<div style="margin-top:16px"><button class="btn pri full" data-a="oSend">📤 Envoyer l\'ordre</button></div>';
+    return h;
+  },
+  after() {
+    const o = trtOrder();
+    trtCalcRefresh();
+    const bind = (sel, ev, fn) => $("#app").querySelectorAll(sel).forEach(el => el.addEventListener(ev, () => { fn(el); trtCalcRefresh(); }));
+    bind("#o_date", "change", el => o.date = el.value);
+    bind("#o_op", "change", el => o.op = el.value);
+    bind("#o_vha", "input", el => o.vha = el.value);
+    bind("#o_r2", "change", el => o.r2 = el.checked);
+    bind("#o_note", "input", el => o.note = el.value);
+    bind("#o_bbch", "input", el => o.bbch = el.value);
+    bind("#o_cible", "input", el => o.cible = el.value);
+    bind("#o_mode", "input", el => o.mode = el.value);
+    bind("#o_sb", "input", el => o.sb = el.value);
+    bind("#o_ent", "change", el => o.ent = el.value);
+    bind("#o_hor", "change", el => o.horaires = el.checked);
+    bind("[data-opar]", "change", el => { o.parc[el.dataset.opar] = el.checked;
+      if (el.checked && !o.ent && S.parcelles[el.dataset.opar].entrepriseId) { o.ent = S.parcelles[el.dataset.opar].entrepriseId; const se = $("#o_ent"); if (se) se.value = o.ent; } const s = Object.keys(o.parc).filter(k => o.parc[k] && S.parcelles[k]).reduce((t, k) => t + (+S.parcelles[k].surface || 0), 0); $("#o_psum").textContent = "(" + fmtN(s) + " ha sélectionnés)"; });
+    bind("[data-odose]", "input", el => o.prods[+el.dataset.odose].dose = el.value);
+    bind("[data-odu]", "change", el => o.prods[+el.dataset.odu].du = el.value);
+    bind("[data-omax]", "input", el => o.prods[+el.dataset.omax].max = el.value);
+  }
+};
+async function oAddProd() {
+  const o = trtOrder();
+  const ps = activeProducts().filter(([id]) => !o.prods.some(x => x.pid === id));
+  const r = await modal('<h3>Ajouter un produit</h3><input class="in" id="ap_q" placeholder="Rechercher"><div class="list" id="ap_l" style="margin-top:8px;max-height:50vh;overflow:auto">' +
+    ps.map(([id, p]) => isBanned(p) ? '<div class="it static" data-n="' + esc(norm(p.nom)) + '" style="opacity:.5"><div class="main"><div class="nm" style="font-size:16px">' + esc(p.nom) + " " + regBadge(p) + "</div></div></div>"
+      : '<button class="it" data-m="' + esc(id) + '" data-n="' + esc(norm(p.nom)) + '"><div class="main"><div class="nm" style="font-size:16px">' + esc(p.nom) + " " + regBadge(p) + '</div><div class="meta">Stock : ' + fmtN(+p.stock || 0) + " " + esc(U(p)) + "</div></div></button>").join("") +
+    '</div><div class="acts"><button class="btn" data-m="cancel">Annuler</button></div>');
+  if (!r) return;
+  o.prods.push({ pid: r.v, dose: "", du: "ha", max: "" });
+  render();
+}
+// filtre de la liste du choix de produit (délégué, la fenêtre est créée dynamiquement)
+document.addEventListener("input", e => {
+  if (e.target.id !== "ap_q") return;
+  const q = norm(e.target.value);
+  document.querySelectorAll("#ap_l [data-n]").forEach(el => { el.style.display = !q || el.dataset.n.includes(q) ? "" : "none"; });
+});
+async function oSend() {
+  const o = trtOrder(), inp = trtInput(o), c = trtCalc(inp);
+  if (!c.ok) return toast(c.errs[0], "err", 5000);
+  if (!o.date) return toast("Indiquez la date prévue.", "err");
+  if (!o.ent) return toast("Choisissez l'entreprise (registre).", "err");
+  if (o.bbch && !/^\d{2}$/.test(o.bbch.trim())) return toast("Stade BBCH : 2 chiffres (ex. 57).", "err");
+  if (o.sb && !/^\d{14}$/.test(o.sb.replace(/\s/g, ""))) return toast("SIRET du bénéficiaire : 14 chiffres.", "err");
+  const pv = S.pulves[o.pulve];
+  const data = {
+    parcelles: inp.parcelles, r2: inp.r2, volumeHa: inp.volumeHa,
+    entrepriseId: o.ent || "", entreprise: o.ent && S.entreprises[o.ent] ? { nom: S.entreprises[o.ent].nom, siret: S.entreprises[o.ent].siret } : null,
+    horaires: !!o.horaires, bbch: (o.bbch || "").trim(), cible: (o.cible || "").trim(), mode: (o.mode || "").trim(), siretBenef: (o.sb || "").replace(/\s/g, ""),
+    pulve: { id: o.pulve, nom: pv.nom, capacite: +pv.capacite },
+    produits: c.prods.map(p => ({ produitId: p.produitId, nom: p.nom, unite: p.unite, contenant: p.contenant, contenance: p.contenance, dose: p.dose, du: p.du, maxHa: p.maxHa, qha: p.qha, how: p.how, qtot: p.qtot, qcuve: p.qcuve })),
+    calc: { surf: c.surf, seff: c.seff, V: c.V, cap: c.cap, B: c.B, n: c.n, bCuve: c.bCuve, eauCuve: c.eauCuve, warns: c.warns }
+  };
+  if (c.warns.some(w => w.includes("dépasse")) && !await confirmBox("Dose maximale dépassée", c.warns.filter(w => w.includes("dépasse")).join(" "), "Envoyer quand même", true)) return;
+  const res = await act("traitement_creer", { p_date: o.date, p_operateur_id: o.op || null, p_pulve_id: o.pulve, p_data: data, p_note: o.note }, "Ordre envoyé");
+  if (res) go("trtview", { pid: res.r });
+}
+
+/* ---------- Fiche d'un ordre (opérateur et décideur) ---------- */
+function calcFromSaved(t) {
+  const d = t.data, c = d.calc || {};
+  return { ok: true, errs: [], warns: c.warns || [], surf: c.surf, seff: c.seff, V: c.V, cap: c.cap, B: c.B, n: c.n, bCuve: c.bCuve, eauCuve: c.eauCuve,
+    prods: (d.produits || []).map(p => ({ ...p, qhaApplique: p.qha * (d.r2 ? 0.5 : 1) })) };
+}
+VIEWS.trtview = {
+  live: true,
+  html() {
+    const id = S.f.pid, t = (S.traitements || {})[id];
+    if (!t) return topbar("Ordre", "trt") + '<div class="note info">Ordre introuvable ou plus visible.</div>';
+    const d = t.data, c = calcFromSaved(t), pv = d.pulve || {};
+    const canDo = t.statut === "a_faire" && (isDec() || !t.operateurId || t.operateurId === S.me.id);
+    let h = '<div class="noprint">' + topbar("Ordre de traitement", "trt") + "</div><div class=\"sheet ordre\">";
+    // En-tête
+    h += '<div class="sh-head"><div><div class="sh-title">Ordre de traitement</div><div>' + (t.statut === "fait" ? "✅ Réalisé le <b>" + fmtDate(t.faitLe) + "</b> par " + esc(t.faitPar) : t.statut === "annule" ? "❌ Annulé" : "À faire le <b>" + fmtDate(t.datePrevue) + "</b> · " + esc(opName(t))) +
+      '</div><div class="muted" style="font-size:12px">Donné par ' + esc(t.creePar) + " le " + fmtDate(String(t.createdAt).slice(0, 10)) + (d.entreprise ? " · " + esc(d.entreprise.nom) : "") + "</div></div></div>";
+    // Bloc clair : appareil, parcelles, cuves, eau et produits par cuve
+    h += '<div class="ob"><div class="ob-l">🚜 Appareil</div><div class="ob-v">' + esc(pv.nom || "?") + ' <small>(cuve ' + fmtN(pv.capacite) + " L)</small></div></div>";
+    h += '<div class="ob"><div class="ob-l">📍 Parcelles</div><div class="ob-v">' + (d.parcelles || []).map(p => esc(p.nom) + " <small>" + fmtN(p.surface) + " ha</small>").join("<br>") +
+      '<div style="margin-top:4px"><span class="badge ' + (d.r2 ? "low" : "in") + '" style="margin:0;font-size:14px">' + (d.r2 ? "UN RANG SUR DEUX" : "Tous les rangs") + "</span></div></div></div>";
+    h += '<div class="ob"><div class="ob-l">🪣 Nombre de cuves</div><div class="ob-v" style="font-size:30px;font-weight:800">' + c.n + " <small>cuve" + (c.n > 1 ? "s" : "") + " de " + fmtN(Math.round(c.bCuve)) + " L</small></div></div>";
+    h += '<div class="ob-t">Dans <u>chaque</u> cuve :</div><table class="sh obt"><tbody>';
+    h += '<tr><td>💧 Eau</td><td class="r">' + fmtN(Math.round(c.eauCuve)) + " L</td></tr>";
+    for (const p of c.prods) h += "<tr><td>" + esc(p.nom) + (p.contenance ? '<br><small>≈ ' + fmtN(p.qcuve / p.contenance) + " " + ctw(p, p.qcuve / p.contenance) + " de " + fmtN(p.contenance) + " " + esc(p.unite) + "</small>" : "") + '</td><td class="r">' + qtyTxt(p.qcuve, p.unite) + "</td></tr>";
+    h += "</tbody></table>";
+    if (c.n > 1) h += '<p style="margin:6px 0 0;font-size:14px">Total pour les ' + c.n + " cuves : " + c.prods.map(p => esc(p.nom) + " " + qtyTxt(p.qtot, p.unite)).join(" · ") + "</p>";
+    if (d.horaires) h += '<div class="note warn"><b>⏱ Noter l\'heure de début et de fin du traitement.</b></div>';
+    if (t.note) h += '<div class="note info"><b>Consignes :</b> ' + esc(t.note) + "</div>";
+    if (t.commentaire) h += '<div class="note ok"><b>Remarque de l\'opérateur :</b> ' + esc(t.commentaire) + "</div>";
+    if (t.statut === "fait" && d.realise) { const rz = d.realise, np = rz.parcelles ? rz.parcelles.length : (d.parcelles || []).length;
+      h += '<div class="note ok"><b>Inscrit au registre</b> : ' + np + " parcelle(s)" + (rz.heureDebut ? " · " + esc(rz.heureDebut) + (rz.heureFin ? "–" + esc(rz.heureFin) : "") : "") + "</div>"; }
+    // Détails pour les décideurs
+    if (isDec()) {
+      h += '<details class="noprint-closed" style="margin-top:12px"><summary><b>Détails : doses, calcul, registre</b></summary>';
+      h += '<table class="sh" style="margin-top:8px"><thead><tr><th>Produit</th><th>Dose prescrite</th><th class="r">Dose/ha appliquée</th><th class="r">Total</th></tr></thead><tbody>' +
+        c.prods.map(p => "<tr><td>" + esc(p.nom) + "</td><td>" + fmtD(p.dose) + " " + esc(doseLabel(p.du, p.unite)) + '</td><td class="r">' + fmtD(p.qhaApplique) + " " + esc(p.unite) + '/ha</td><td class="r">' + qtyTxt(p.qtot, p.unite) + "</td></tr>").join("") + "</tbody></table>";
+      h += '<div style="font-size:14px;margin-top:6px">' + c.prods.map(p => "<div>" + esc(p.nom) + " : " + esc(p.how) + "</div>").join("") +
+        "<div>Volume : " + fmtN(d.volumeHa) + " L/ha (tous rangs) × " + fmtN(c.seff) + " ha traités = " + fmtN(Math.round(c.B)) + " L de bouillie.</div>" +
+        (d.entreprise ? "<div>Registre : " + esc(d.entreprise.nom) + " (SIRET " + esc(d.entreprise.siret) + ")</div>" : "") +
+        (d.bbch ? "<div>Stade BBCH : " + esc(d.bbch) + "</div>" : "") + (d.cible ? "<div>Cible : " + esc(d.cible) + "</div>" : "") + "</div>";
+      if (c.warns.length) h += '<div class="note warn" style="font-size:13px">' + c.warns.map(esc).join("<br>") + "</div>";
+      h += "</details>";
+    }
+    h += '<div class="sh-foot">Vérifier l\'étiquette du produit avant préparation. Remplir la cuve à moitié d\'eau, ajouter les produits, compléter en eau en agitant.</div>';
+    h += "</div><div class=\"noprint\" style=\"margin-top:14px\">";
+    if (canDo) h += '<button class="btn pri full" data-a="trtDone">✅ Traitement réalisé</button>';
+    h += '<div class="row" style="margin-top:10px"><button class="btn" data-a="doPrint">🖨️ Imprimer</button>' + (isDec() ? '<button class="btn" data-a="trtCopy">📄 Dupliquer</button>' : "") + (isDec() && t.statut === "a_faire" ? '<button class="btn" style="color:var(--bad)" data-a="trtCancel">Annuler l\'ordre</button>' : "") + "</div></div>";
+    return h;
+  }
+};
+function trtDone() {
+  const t = S.traitements[S.f.pid]; if (!t) return;
+  const d = t.data, ps = d.parcelles || [];
+  const m = $("#modal");
+  m.innerHTML = '<div class="bk"><div class="bx" style="max-height:90vh;overflow:auto"><h3>Traitement réalisé ?</h3>' +
+    '<label class="f">Date</label><input class="in" type="date" id="td_date" value="' + today() + '" max="' + today() + '">' +
+    (d.horaires ? '<div class="row"><div><label class="f">Heure début</label><input class="in" type="time" id="td_hd"></div><div><label class="f">Heure fin</label><input class="in" type="time" id="td_hf"></div></div>' : "") +
+    (ps.length > 1 ? '<label class="f">Parcelles traitées</label><div class="list">' + ps.map(p => '<label class="it" style="cursor:pointer;min-height:50px"><input type="checkbox" data-tdp="' + esc(p.id) + '" checked style="width:24px;height:24px;accent-color:var(--acc)"><div class="main"><div class="nm" style="font-size:16px">' + esc(p.nom) + "</div></div></label>").join("") + "</div>" : "") +
+    '<label class="f">Remarque <small>(facultatif)</small></label><input class="in" id="td_com">' +
+    '<div class="acts"><button class="btn" id="td_x">Annuler</button><button class="btn pri" id="td_ok">✅ Confirmer</button></div></div></div>';
+  $("#td_x").onclick = () => { m.innerHTML = ""; };
+  $("#td_ok").onclick = async () => {
+    const boxes = [...m.querySelectorAll("[data-tdp]")];
+    const parcs = boxes.length ? boxes.filter(c => c.checked).map(c => c.dataset.tdp) : ps.map(p => p.id);
+    if (!parcs.length) return toast("Cochez au moins une parcelle traitée.", "err");
+    const hd = ($("#td_hd") || {}).value || "", hf = ($("#td_hf") || {}).value || "";
+    if (d.horaires && (!hd || !hf)) return toast("Indiquez l'heure de début et de fin.", "err");
+    const args = { p_id: S.f.pid, p_statut: "fait", p_date: $("#td_date").value || today(), p_commentaire: $("#td_com").value,
+      p_parcelles: parcs, p_heure_debut: hd, p_heure_fin: hf, p_bbch: "" };
+    m.innerHTML = "";
+    await act("traitement_statut", args, "Merci ! Traitement enregistré.");
+  };
+}
+function trtCopy() {
+  const t = S.traitements[S.f.pid]; if (!t) return;
+  const d = t.data, parc = {};
+  (d.parcelles || []).forEach(p => { if (S.parcelles[p.id] && S.parcelles[p.id].actif !== false) parc[p.id] = true; });
+  go("trtnew", { o: { date: today(), op: t.operateurId || "", parc, pulve: (d.pulve && S.pulves[d.pulve.id] && S.pulves[d.pulve.id].actif !== false) ? d.pulve.id : "",
+    vha: String(d.volumeHa || ""), r2: !!d.r2, prods: (d.produits || []).filter(p => S.produits[p.produitId] && S.produits[p.produitId].actif !== false).map(p => ({ pid: p.produitId, dose: String(p.dose), du: p.du, max: p.maxHa ? String(p.maxHa) : "" })), note: t.note || "",
+    bbch: "", cible: d.cible || "", mode: d.mode || "Pulvérisation", sb: d.siretBenef || "", ent: d.entrepriseId || "", horaires: !!d.horaires } });
+  toast("Copie de l'ordre : vérifiez la date et les doses, puis envoyez.");
+}
+async function trtCancel() {
+  if (!await confirmBox("Annuler cet ordre ?", "L'opérateur ne le verra plus dans ses traitements à faire.", "Annuler l'ordre", true)) return;
+  await act("traitement_statut", { p_id: S.f.pid, p_statut: "annule" }, "Ordre annulé");
+}
+
+/* ---------- Registre phyto (cahier de culture) ---------- */
+const OEPP = { pommier: "MABSD", poirier: "PYUCO", prunier: "PRNDO", cerisier: "PRNAV", "pêcher": "PRNPS", pecher: "PRNPS", abricotier: "PRNAR", cognassier: "CYDOB", noyer: "IUGRE", vigne: "VITVI" };
+const activeEnts = () => Object.entries(S.entreprises || {}).filter(([, e]) => e && e.actif !== false).sort(byName);
+function parcMissing(p) {
+  const m = [];
+  if (!((p.ilot && p.numParcelle && p.insee) || (p.lat != null && p.lon != null))) m.push("localisation (RPG ou GPS)");
+  if (!p.culture && !p.codeOepp) m.push("culture");
+  if (!p.entrepriseId) m.push("entreprise");
+  return m;
+}
+function regLineMissing(r) {
+  const m = [];
+  if (!/^\d{14}$/.test(r.siret || "")) m.push("SIRET");
+  if (!/^\d{7}$/.test(r.amm || "")) m.push("n° AMM");
+  if (!((r.ilot && r.num_parcelle && r.insee) || (r.lat != null && r.lon != null))) m.push("localisation");
+  if (!r.culture && !r.code_oepp) m.push("culture");
+  return m;
+}
+VIEWS.registre = {
+  html() {
+    if (!isDec()) return topbar("Registre", "home") + '<div class="note bad">Réservé aux décideurs.</div>';
+    const f = S.f, y = new Date().getFullYear();
+    if (!f.year) f.year = String(y);
+    let h = '<div class="noprint">' + topbar("Registre phyto", "home") + "<h1>Registre phytosanitaire</h1>";
+    h += '<div class="card"><div class="row"><div><b>Entreprises du groupe</b><div class="muted" style="font-size:14px">' + (activeEnts().length ? activeEnts().map(([, e]) => esc(e.nom) + " · " + esc(e.siret)).join("<br>") : "⚠️ aucune (le SIRET est obligatoire au registre)") + "</div></div>" +
+      '<button class="btn sm" style="flex:none" data-a="go" data-v="ents">Gérer</button></div></div>';
+    const years = []; for (let k = y; k >= y - 5; k--) years.push(String(k));
+    h += '<div class="row"><select class="in" id="rg_y">' + years.map(v => '<option' + (f.year === v ? " selected" : "") + ">" + v + "</option>").join("") + '</select>' +
+      '<select class="in" id="rg_e"><option value="">Toutes les entreprises</option>' + Object.entries(S.entreprises || {}).sort(byName).map(([id, e]) => '<option value="' + esc(id) + '"' + (f.ent === id ? " selected" : "") + ">" + esc(e.nom) + "</option>").join("") + "</select>" +
+      '<select class="in" id="rg_p"><option value="">Toutes les parcelles</option>' + Object.entries(S.parcelles || {}).sort(byName).map(([id, p]) => '<option value="' + esc(id) + '"' + (f.parc === id ? " selected" : "") + ">" + esc(p.nom) + "</option>").join("") + "</select></div>";
+    h += '<div class="row" style="margin-top:10px;flex-wrap:wrap"><button class="btn pri" data-a="go" data-v="regman">➕ Saisie manuelle</button><button class="btn" data-a="regCsv">⬇️ Export CSV</button><button class="btn" data-a="doPrint">🖨️ Imprimer</button></div>';
+    h += '<p class="muted" style="font-size:13px">Les traitements déclarés « réalisés » s\'inscrivent automatiquement. L\'export CSV suit les champs de l\'arrêté du 24/12/2025 (annexes I et II) : format électronique lisible par machine.</p></div>';
+    h += '<div id="rg_list"><div class="spin"></div></div>';
+    return h;
+  },
+  after() {
+    const y = $("#rg_y"), p = $("#rg_p");
+    if (y) y.addEventListener("change", () => { S.f.year = y.value; regLoad(); });
+    if (p) p.addEventListener("change", () => { S.f.parc = p.value; regRender(); });
+    const e = $("#rg_e"); if (e) e.addEventListener("change", () => { S.f.ent = e.value; regRender(); });
+    regLoad();
+  },
+  live() { if (S.f.rows && S.f.rowsVersion !== S.version) regLoad(); }
+};
+async function regLoad() {
+  const y = S.f.year;
+  try {
+    const rows = await api("registre_list", { p_token: S.token, p_from: y + "-01-01", p_to: y + "-12-31" });
+    S.f.rows = rows; S.f.rowsVersion = S.version; regRender();
+  } catch (e) { const el = $("#rg_list"); if (el) el.innerHTML = '<div class="note bad">' + esc(e.message) + "</div>"; }
+}
+const regRows = () => (S.f.rows || []).filter(r => (!S.f.parc || r.parcelle_id === S.f.parc) && (!S.f.ent || r.entreprise_id === S.f.ent));
+function regRender() {
+  const el = $("#rg_list"); if (!el) return;
+  const rows = regRows();
+  const bad = rows.filter(r => regLineMissing(r).length);
+  let h = "";
+  if (!rows.length) { el.innerHTML = '<div class="note info">Aucun traitement enregistré pour ' + esc(S.f.year) + ".</div>"; return; }
+  if (bad.length) {
+    const kinds = {}; bad.forEach(r => regLineMissing(r).forEach(k => kinds[k] = (kinds[k] || 0) + 1));
+    h += '<div class="note warn noprint"><b>' + bad.length + " ligne(s) incomplète(s)</b> : " + Object.entries(kinds).map(([k, n]) => esc(k) + " (" + n + ")").join(", ") +
+      ".<br><small>Complétez la fiche des parcelles (entreprise, RPG/INSEE ou GPS, culture) et le n° AMM des produits. Les lignes déjà enregistrées gardent les données du jour : supprimez-les et ressaisissez-les si besoin.</small></div>";
+  } else h += '<div class="note ok noprint">✓ Toutes les lignes contiennent les informations obligatoires.</div>';
+  h += '<div class="sheet"><div class="sh-head"><div><div class="sh-title">Registre d\'utilisation des produits phytopharmaceutiques — ' + esc(S.f.year) + "</div><div>" + (S.f.ent && S.entreprises[S.f.ent] ? esc(S.entreprises[S.f.ent].nom) + " — SIRET " + esc(S.entreprises[S.f.ent].siret) : "Toutes les entreprises du groupe") + (S.f.parc ? " · parcelle : " + esc((S.parcelles[S.f.parc] || {}).nom || "") : "") + "</div></div><div class=\"sh-sum\">" + rows.length + " ligne(s)</div></div>";
+  h += '<table class="sh"><thead><tr><th>Date</th><th>Parcelle / culture</th><th>Produit (AMM)</th><th class="r">Dose/ha</th><th class="r">Surface</th><th class="r">Quantité</th><th>BBCH</th><th>Applicateur</th><th class="noprint"></th></tr></thead><tbody>';
+  h += rows.map(r => {
+    const miss = regLineMissing(r);
+    return "<tr" + (miss.length ? ' style="background:#fff4dc"' : "") + "><td>" + fmtDate(r.date) + (r.heure_debut ? "<br><small>" + esc(r.heure_debut) + (r.heure_fin ? "–" + esc(r.heure_fin) : "") + "</small>" : "") + "</td><td><b>" + esc(r.parcelle_nom) + "</b><br><small>" + esc(r.culture || r.code_oepp) + (r.bio ? " · AB" : "") + (!S.f.ent && r.entreprise_nom ? " · " + esc(r.entreprise_nom) : "") + "</small></td><td>" + esc(r.produit_nom) + "<br><small>" + esc(r.amm || "AMM ?") + (r.cible ? " · " + esc(r.cible) : "") + "</small></td>" +
+      '<td class="r">' + fmtD(r.dose_ha) + " " + esc(r.dose_unite) + '</td><td class="r">' + fmtN(r.surface_ha) + ' ha</td><td class="r">' + fmtN(r.quantite) + " " + esc(r.quantite_unite) + "</td><td>" + esc(r.bbch || "") + "</td><td>" + esc(r.applicateur) + (miss.length ? '<br><small style="color:var(--warn)">manque : ' + esc(miss.join(", ")) + "</small>" : "") + "</td>" +
+      '<td class="noprint"><button class="btn sm ghost" style="padding:4px 8px" data-a="regDel" data-id="' + esc(r.id) + '" aria-label="Supprimer">🗑</button></td></tr>';
+  }).join("");
+  h += '</tbody></table><div class="sh-foot">Registre tenu en application de l\'article 67 du règlement (CE) n° 1107/2009, du règlement d\'exécution (UE) 2023/564 et de l\'arrêté du 24 décembre 2025. À conserver au moins 5 ans.</div></div>';
+  el.innerHTML = h;
+}
+function regCsvText() {
+  const rows = regRows();
+  const c = v => '"' + String(v ?? "").replace(/"/g, '""') + '"';
+  const num = v => (v === null || v === undefined || v === "") ? "" : String(+v).replace(".", ",");
+  const head = ["Entreprise", "SIRET detenteur", "SIRET beneficiaire", "Nom commercial du produit", "Numero d'autorisation (AMM)", "Date d'utilisation (JJ/MM/AAAA)",
+    "Heure de debut (HH:MM)", "Heure de fin (HH:MM)", "Dose", "Unite de dose", "Ilot RPG", "Numero de parcelle RPG", "Code commune INSEE",
+    "Latitude (WGS84)", "Longitude (WGS84)", "Surface traitee", "Unite de surface", "Culture (code OEPP)", "Culture (texte)", "Stade BBCH",
+    "Production biologique (oui/non)", "Cible", "Mode d'application", "Quantite de produit", "Unite de quantite", "Parcelle (nom interne)", "Applicateur", "Certiphyto applicateur"];
+  const lines = [head.map(c).join(";")];
+  for (const r of rows) lines.push([r.entreprise_nom, r.siret, r.siret_beneficiaire, r.produit_nom, r.amm, fmtDate(r.date), r.heure_debut, r.heure_fin, num(r.dose_ha), r.dose_unite,
+    r.ilot, r.num_parcelle, r.insee, num(r.lat), num(r.lon), num(r.surface_ha), "ha", r.code_oepp, r.culture, r.bbch, r.bio ? "oui" : "non",
+    r.cible, r.mode_application, num(r.quantite), r.quantite_unite, r.parcelle_nom, r.applicateur, r.certiphyto].map(c).join(";"));
+  return lines.join("\r\n");
+}
+function regCsv() {
+  if (!regRows().length) return toast("Rien à exporter pour cette sélection.", "err");
+  const blob = new Blob(["﻿" + regCsvText()], { type: "text/csv;charset=utf-8" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob); a.download = "registre-phyto-" + S.f.year + (S.f.ent && S.entreprises[S.f.ent] ? "-" + S.entreprises[S.f.ent].siret : "") + (S.f.parc ? "-" + norm((S.parcelles[S.f.parc] || {}).nom || "").replace(/[^a-z0-9]+/g, "-") : "") + ".csv";
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  toast("Export CSV téléchargé (" + regRows().length + " lignes).");
+}
+async function regSiret() {
+  const r = await modal('<h3>SIRET de l\'exploitation</h3><p class="muted">14 chiffres, inscrit sur chaque ligne du registre.</p><input class="in" data-mi inputmode="numeric" maxlength="17" value="' + esc(S.siret || "") + '"><div class="acts"><button class="btn" data-m="cancel">Annuler</button><button class="btn pri" data-m="ok">Enregistrer</button></div>');
+  if (!r) return;
+  if (await act("set_siret", { p_siret: (r.input || "").replace(/\s/g, "") }, "SIRET enregistré")) render();
+}
+async function regDel(id) {
+  if (!await confirmBox("Supprimer cette ligne du registre ?", "À utiliser pour corriger une erreur. La suppression est définitive.", "Supprimer", true)) return;
+  if (await act("registre_supprimer", { p_id: id }, "Ligne supprimée")) regLoad();
+}
+
+/* ---------- Saisie manuelle au registre ---------- */
+VIEWS.regman = {
+  html() {
+    if (!isDec()) return topbar("Registre", "home") + '<div class="note bad">Réservé aux décideurs.</div>';
+    const f = S.f; if (!f.sel) f.sel = {};
+    let h = topbar("Saisie au registre", "registre") + "<h1>Saisie manuelle</h1><p class=\"muted\">Pour un traitement réalisé sans ordre dans l'appli. Une ligne est créée par parcelle cochée.</p>";
+    h += '<div class="row"><div><label class="f">Date</label><input class="in" type="date" id="rm_date" max="' + today() + '" value="' + esc(f.date || today()) + '"></div>' +
+      '<div><label class="f">Stade BBCH</label><input class="in" id="rm_bbch" inputmode="numeric" maxlength="2" placeholder="ex. 57" value="' + esc(f.bbch || "") + '"></div></div>';
+    h += '<div class="row"><div><label class="f">Heure début</label><input class="in" type="time" id="rm_hd" value="' + esc(f.hd || "") + '"></div><div><label class="f">Heure fin</label><input class="in" type="time" id="rm_hf" value="' + esc(f.hf || "") + '"></div></div>';
+    h += '<label class="f">Entreprise</label><select class="in" id="rm_ent"><option value="">Selon la parcelle</option>' + activeEnts().map(([id, e]) => '<option value="' + esc(id) + '"' + (f.ent === id ? " selected" : "") + ">" + esc(e.nom) + "</option>").join("") + "</select>";
+    h += '<label class="f">Produit</label><select class="in" id="rm_prod"><option value="">Choisir…</option>' + activeProducts().map(([id, p]) => '<option value="' + esc(id) + '"' + (f.prod === id ? " selected" : "") + ">" + esc(p.nom) + (p.amm ? " (AMM " + esc(p.amm) + ")" : "") + "</option>").join("") + "</select>";
+    const pu = f.prod && S.produits[f.prod] ? U(S.produits[f.prod]) : "L";
+    h += '<label class="f">Dose appliquée <small>(' + esc(pu) + '/ha, par hectare de parcelle)</small></label><input class="in" id="rm_dose" inputmode="decimal" value="' + esc(f.dose || "") + '">';
+    h += '<label class="f">Parcelles</label><div class="list">' + activeParcs().map(([id, p]) => '<label class="it" style="cursor:pointer;min-height:54px"><input type="checkbox" data-rmp="' + esc(id) + '" ' + (f.sel[id] ? "checked" : "") + ' style="width:24px;height:24px;accent-color:var(--acc)"><div class="main"><div class="nm" style="font-size:16px">' + esc(p.nom) + '</div><div class="meta">' + esc(p.culture || "") + '</div></div><div class="qty" style="font-size:15px">' + fmtN(p.surface) + " ha</div></label>").join("") + "</div>";
+    h += '<label class="f">Cible <small>(facultatif)</small></label><input class="in" id="rm_cible" value="' + esc(f.cible || "") + '" placeholder="ex. Tavelure">';
+    h += '<div class="row"><div><label class="f">Mode d\'application</label><input class="in" id="rm_mode" value="' + esc(f.mode || "Pulvérisation") + '"></div><div><label class="f">Applicateur</label><input class="in" id="rm_app" list="rm_users" value="' + esc(f.app || S.me.prenom) + '"><datalist id="rm_users">' + Object.values(S.users).map(u => "<option>" + esc(u.prenom) + "</option>").join("") + "</datalist></div></div>";
+    h += '<label class="f">SIRET du bénéficiaire <small>(seulement en cas de prestation de service)</small></label><input class="in" id="rm_sb" inputmode="numeric" value="' + esc(f.sb || "") + '">';
+    h += '<div style="margin-top:16px"><button class="btn pri full" data-a="regManSave">Enregistrer au registre</button></div>';
+    return h;
+  },
+  after() {
+    const keep = () => { const g = id => ($("#" + id) || {}).value; Object.assign(S.f, { ent: g("rm_ent"), date: g("rm_date"), bbch: g("rm_bbch"), hd: g("rm_hd"), hf: g("rm_hf"), dose: g("rm_dose"), cible: g("rm_cible"), mode: g("rm_mode"), app: g("rm_app"), sb: g("rm_sb") }); };
+    $("#app").querySelectorAll("input,select").forEach(el => el.addEventListener("input", keep));
+    $("#rm_prod").addEventListener("change", () => { keep(); S.f.prod = $("#rm_prod").value; render(); });
+    $("#app").querySelectorAll("[data-rmp]").forEach(c => c.addEventListener("change", () => { S.f.sel[c.dataset.rmp] = c.checked; }));
+  }
+};
+async function regManSave() {
+  const f = S.f, g = id => ($("#" + id) || {}).value || "";
+  const parcs = Object.keys(f.sel || {}).filter(k => f.sel[k]);
+  const dose = parseN(g("rm_dose"));
+  if (!g("rm_prod")) return toast("Choisissez le produit.", "err");
+  if (!(dose > 0)) return toast("Indiquez la dose par hectare.", "err");
+  if (!parcs.length) return toast("Cochez au moins une parcelle.", "err");
+  const r = await act("registre_manuel", { p_date: g("rm_date"), p_parcelles: parcs, p_produit_id: g("rm_prod"), p_dose_ha: dose, p_heure_debut: g("rm_hd"), p_heure_fin: g("rm_hf"),
+    p_bbch: g("rm_bbch").trim(), p_cible: g("rm_cible"), p_mode: g("rm_mode"), p_applicateur: g("rm_app"), p_siret_benef: g("rm_sb").replace(/\s/g, ""), p_entreprise_id: g("rm_ent") || null }, "Enregistré au registre");
+  if (r) go("registre", { year: g("rm_date").slice(0, 4) });
+}
+
+/* ---------- Entreprises du groupe ---------- */
+VIEWS.ents = {
+  live: true,
+  html() {
+    if (!isDec()) return topbar("Entreprises", "home") + '<div class="note bad">Réservé aux décideurs.</div>';
+    const es = Object.entries(S.entreprises || {}).sort((a, b) => (a[1].actif === false) - (b[1].actif === false) || byName(a, b));
+    let h = topbar("Entreprises", "registre") + "<h1>Entreprises du groupe</h1><p class=\"muted\">Chaque entreprise tient son registre sous son SIRET. Rattachez chaque parcelle à son entreprise ; elle est proposée automatiquement dans les ordres.</p>";
+    h += es.length ? '<div class="list">' + es.map(([id, e]) => '<button class="it" data-a="go" data-v="ent:' + esc(id) + '"' + (e.actif === false ? ' style="opacity:.5"' : "") + '><div class="main"><div class="nm">' + esc(e.nom) + '</div><div class="meta">SIRET ' + esc(e.siret) + " · " + activeParcs().filter(([, p]) => p.entrepriseId === id).length + " parcelle(s)</div></div><div>›</div></button>").join("") + "</div>" : '<div class="note info">Aucune entreprise.</div>';
+    h += '<div class="foot"><button class="btn pri full" data-a="go" data-v="ent">➕ Ajouter une entreprise</button></div>';
+    return h;
+  }
+};
+VIEWS.ent = {
+  html() {
+    const id = S.f.pid, e = id ? (S.entreprises[id] || {}) : {};
+    let h = topbar(id ? "Entreprise" : "Nouvelle entreprise", "ents") + "<h1>" + (id ? esc(e.nom) : "Nouvelle entreprise") + "</h1>";
+    h += '<label class="f">Nom</label><input class="in" id="en_nom" value="' + esc(e.nom || "") + '">';
+    h += '<label class="f">SIRET <small>(14 chiffres)</small></label><input class="in" id="en_siret" inputmode="numeric" maxlength="17" value="' + esc(e.siret || "") + '">';
+    if (id) h += '<label class="tog"><span><b>Active</b></span><input type="checkbox" id="en_act" ' + (e.actif !== false ? "checked" : "") + "></label>";
+    h += '<div style="margin-top:16px"><button class="btn pri full" data-a="saveEnt">Enregistrer</button></div>';
+    return h;
+  }
+};
+async function saveEnt() {
+  const siret = $("#en_siret").value.replace(/\s/g, "");
+  if (!$("#en_nom").value.trim()) return toast("Indiquez le nom.", "err");
+  if (!/^\d{14}$/.test(siret)) return toast("Le SIRET doit faire 14 chiffres.", "err");
+  if (await act("save_entreprise", { p_id: S.f.pid || null, p_nom: $("#en_nom").value, p_siret: siret, p_actif: S.f.pid ? $("#en_act").checked : true }, "Entreprise enregistrée")) go("ents");
+}
+
 /* ---------- État imprimable ---------- */
 function regText(p) {
   const r = regStatus(p);
@@ -1404,7 +1997,10 @@ VIEWS.commandes = {
     const st = stocks(), os = openOrders();
     let h = topbar("Commandes", "home") + "<h1>Commandes en cours</h1><p class=\"muted\">Visible par tous les décideurs.</p>";
     h += os.length ? '<div class="list">' + os.map(([id, p]) => '<div class="it static"><div class="main"><div class="nm">' + esc(p.nom) + '</div><div class="meta">Par ' + esc(p.commande.par || "?") + " le " + fmtDate(p.commande.le) + (p.commande.note ? " · « " + esc(p.commande.note) + " »" : "") + "<br>Stock : " + fmtN(st[id] || 0) + " " + esc(U(p)) + '</div></div><button class="btn sm" data-a="orderOff" data-id="' + esc(id) + '">Retirer</button></div>').join("") + "</div>"
-      : '<div class="note info">Aucune commande en cours.</div>';
+      : "";
+    const cl = Object.entries(S.cmdLibres || {}).sort((a, b) => String(a[1].le).localeCompare(String(b[1].le)));
+    if (cl.length) h += (os.length ? '<div style="height:10px"></div>' : "") + '<div class="list">' + cl.map(([id, c]) => '<div class="it static"><div class="main"><div class="nm">' + esc(c.nom) + ' <span class="badge cmd">Nouveau produit</span></div><div class="meta">Par ' + esc(c.par || "?") + " le " + fmtDate(c.le) + (c.note ? " · « " + esc(c.note) + " »" : "") + "<br>Sera créé dans l'appli à la réception</div></div>" + '<button class="btn sm" data-a="clOff" data-id="' + esc(id) + '">Retirer</button></div>').join("") + "</div>";
+    if (!os.length && !cl.length) h += '<div class="note info">Aucune commande en cours.</div>';
     h += '<div class="foot"><button class="btn pri full" data-a="startPick" data-m="cmd">🛒 Noter une commande</button></div>';
     h += '<p class="muted center" style="font-size:13px">À la réception d\'un produit commandé, l\'appli propose de retirer la commande.</p>';
     return h;
@@ -1559,6 +2155,7 @@ VIEWS.useredit = {
     h += '<label class="f">Code ' + (id ? "<small>(laisser vide pour ne pas changer)</small>" : "<small>(4 à 6 chiffres)</small>") + '</label><input class="in" id="u_code" inputmode="numeric" maxlength="6" autocomplete="off">';
     if (id) h += '<label class="tog"><span><b>Compte actif</b><br><small class="muted">Désactiver empêche la connexion, l\'historique est conservé</small></span><input type="checkbox" id="u_act" ' + (u.actif !== false ? "checked" : "") + "></label>";
     h += '<div style="margin-top:16px"><button class="btn pri full" data-a="saveUser">Enregistrer</button></div>';
+    if (id && id !== S.me.id) h += '<div class="foot"><button class="btn ghost" style="color:var(--bad)" data-a="delUser">🗑 Supprimer ce compte</button><p class="muted" style="font-size:13px">L\'historique (sorties, inventaires, registre) reste lisible : le prénom et le n° Certiphyto y sont recopiés sur chaque ligne.</p></div>';
     return h;
   }
 };
@@ -1621,6 +2218,34 @@ const A = {
   invValidate: () => invValidate(),
   invScan: () => scan(code => invGotCode(code)),
   goReq: d => go("inv", { req: d.id }),
+  saveParc: () => saveParc(),
+  parcGps: () => {
+    if (!navigator.geolocation) return toast("Position indisponible sur cet appareil.", "err");
+    toast("Recherche de la position…");
+    navigator.geolocation.getCurrentPosition(pos => { $("#pa_lat").value = pos.coords.latitude.toFixed(7); $("#pa_lon").value = pos.coords.longitude.toFixed(7); toast("Position relevée (précision ≈ " + Math.round(pos.coords.accuracy) + " m)."); },
+      err => toast("Position refusée ou indisponible : " + err.message, "err", 5000), { enableHighAccuracy: true, timeout: 20000 });
+  },
+  regCsv: () => regCsv(),
+  regDel: d => regDel(d.id),
+  regManSave: () => regManSave(),
+  saveEnt: () => saveEnt(),
+  delUser: async () => { const u = S.users[S.f.uid] || {};
+    if (!await confirmBox("Supprimer le compte de " + (u.prenom || "?") + " ?", "Suppression définitive : la personne ne pourra plus se connecter. Son historique reste dans l'appli. Ses ordres de traitement à faire passent à « n'importe quel opérateur ».", "Supprimer", true)) return;
+    if (await act("delete_user", { p_id: S.f.uid }, "Compte supprimé")) go("users"); },
+  clNew: async () => { const r = await modal('<h3>Commander un nouveau produit</h3><p class="muted">Il sera créé dans l\'appli à sa livraison.</p><label class="f">Nom du produit</label><input class="in" data-mi placeholder="Nom commercial"><label class="f">Note <small>(facultatif)</small></label><input class="in" id="cl_note" placeholder="fournisseur, quantité, date prévue…"><div class="acts"><button class="btn" data-m="cancel">Annuler</button><button class="btn pri" data-m="ok">Valider</button></div>');
+    if (!r) return; const note = S._clNote || ""; S._clNote = "";
+    if (!(r.input || "").trim()) return toast("Indiquez le nom du produit.", "err");
+    if (await act("cmd_libre_creer", { p_nom: r.input, p_note: note }, "Commande notée — visible par tous les décideurs")) go("commandes"); },
+  clOff: async d => { if (!await confirmBox("Retirer cette commande ?", "", "Retirer", true)) return; await act("cmd_libre_statut", { p_id: d.id, p_statut: "annulee" }, "Commande retirée"); },
+  clRecv: d => { const c = S.cmdLibres[d.id]; go("newprod", { nom: c ? c.nom : "", then: "entree", cmdLibre: d.id }); },
+  savePulv: () => savePulv(),
+  oPulve: d => { const o = trtOrder(); o.pulve = d.id; const pv = S.pulves[d.id]; if (pv && pv.volumeHa && !String(o.vha).trim()) o.vha = String(pv.volumeHa); render(); },
+  oAddProd: () => oAddProd(),
+  oDelProd: d => { trtOrder().prods.splice(+d.i, 1); render(); },
+  oSend: () => oSend(),
+  trtDone: () => trtDone(),
+  trtCopy: () => trtCopy(),
+  trtCancel: () => trtCancel(),
   rqUser: d => { S.f.ech = ($("#rq_ech") || {}).value || S.f.ech; S.f.note = ($("#rq_note") || {}).value || S.f.note; S.f.uid = d.id; render(); },
   rqScope: d => { S.f.ech = ($("#rq_ech") || {}).value || S.f.ech; S.f.note = ($("#rq_note") || {}).value || S.f.note; S.f.scope = d.k; render(); },
   rqAll: () => { activeProducts().forEach(([id]) => S.f.sel[id] = true); render(); },
@@ -1631,6 +2256,7 @@ const A = {
   histoInv: d => go("histo", { ht: "ajustement", hp: d.n }),
   doPrint: () => { try { window.print(); } catch (e) { toast("Impression impossible sur cet appareil.", "err"); } }
 };
+document.addEventListener("input", e => { if (e.target.id === "cl_note") S._clNote = e.target.value; });
 document.addEventListener("click", e => {
   const b = e.target.closest("[data-a]");
   if (!b || b.closest("#modal")) return;
