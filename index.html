@@ -127,14 +127,12 @@ input.in:focus,select.in:focus,textarea.in:focus{outline:none;border-color:var(-
 <div id="modal"></div>
 <div id="toast"></div>
 <input type="file" id="camfile" accept="image/*" capture="environment" hidden>
+<script src="config.js"></script>
 <script>
-/* =====================================================================
-   CONFIGURATION — à remplir une seule fois (voir LISEZMOI)
-   Supabase > Project Settings > API (ou "API Keys")
-   ===================================================================== */
-const SUPABASE_URL = "https://utamxewopvbxfjucifvq.supabase.co";
-const SUPABASE_KEY = "sb_publishable_D4Douz9o7fVdl1xDs3hMNw_cd49E9MW";   // clé "anon public" ou "publishable"
-/* ===================================================================== */
+/* Configuration : lue dans le fichier config.js (voir LISEZMOI). */
+const CFG = window.STOCK_PHYTO_CONFIG || {};
+const SUPABASE_URL = String(CFG.url || "https://VOTRE-PROJET.supabase.co").trim().replace(/\/+$/, "").replace(/\/rest\/v1$/, "");
+const SUPABASE_KEY = String(CFG.key || "VOTRE-CLE-PUBLIQUE").trim();
 const POLL_MS = 8000;
 
 /* ===================== Utilitaires ===================== */
@@ -145,6 +143,7 @@ const today = () => { const d = new Date(); return d.getFullYear()+"-"+pad(d.get
 const fmtDate = s => { if (!s) return ""; const [y,m,d] = String(s).slice(0,10).split("-"); return d+"/"+m+"/"+y; };
 const fmtN = n => (Math.round((+n || 0) * 100) / 100).toLocaleString("fr-FR", {maximumFractionDigits: 2});
 const parseN = s => { const v = parseFloat(String(s ?? "").replace(/\s/g,"").replace(",", ".")); return isFinite(v) ? v : NaN; };
+const sleep = ms => new Promise(r => setTimeout(r, ms));
 const norm = s => String(s || "").normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().trim();
 const isCode = s => /^\d{8,14}$/.test(String(s).trim());
 const store = {
@@ -154,7 +153,7 @@ const store = {
 };
 
 /* ===================== Serveur (Supabase) ===================== */
-const CONFIGURED = /^https:\/\/.+/.test(SUPABASE_URL) && !SUPABASE_URL.includes("VOTRE-PROJET") && SUPABASE_KEY && !SUPABASE_KEY.includes("VOTRE-CLE");
+const CONFIGURED = /^https:\/\/.+/.test(SUPABASE_URL) && !SUPABASE_URL.includes("VOTRE-PROJET") && SUPABASE_KEY && !SUPABASE_KEY.includes("VOTRE-CLE") && !SUPABASE_KEY.includes("COLLEZ-ICI");
 class ApiError extends Error { constructor(m, kind) { super(m); this.kind = kind || ""; } }
 async function api(fn, args = {}) {
   let r;
@@ -198,8 +197,53 @@ const openAlerts = () => Object.entries(S.alertes).filter(([, a]) => a && !a.res
 const openOrders = () => activeProducts().filter(([, p]) => p.commande && p.commande.enCours);
 const isLow = (p, q) => q < 0 || (+p.seuil > 0 && q <= +p.seuil);
 
+/* ---- Statut réglementaire (E-Phy) ---- */
+const daysUntil = d => Math.round((new Date(d + "T12:00:00") - new Date(today() + "T12:00:00")) / 86400000);
+const REG_SOON = 30, REG_WARN = 180;
+function regStatus(p) {
+  if (!p || !String(p.amm || "").trim()) return { k: "noamm" };
+  const e = p.ephy;
+  if (!e) return { k: "unknown" };
+  const fu = e.finUtilisation, fd = e.finDistribution;
+  const ufut = (e.usagesFin || []).filter(u => u.finUtilisation && u.finUtilisation >= today());
+  if (fu) {
+    const d = daysUntil(fu);
+    if (d < 0) return { k: "banned", date: fu, days: d, e };
+    return { k: d <= REG_SOON ? "soon" : d <= REG_WARN ? "warn" : "ending", date: fu, days: d, fd, e };
+  }
+  if (/retir/i.test(e.etat || "")) return { k: "retire", e };
+  return { k: "ok", e, usages: ufut };
+}
+const isBanned = p => regStatus(p).k === "banned";
+function regBadge(p) {
+  const r = regStatus(p);
+  if (r.k === "banned") return '<span class="badge neg">Interdit</span>';
+  if (r.k === "soon" || r.k === "warn") return '<span class="badge low">Fin le ' + fmtDate(r.date) + "</span>";
+  if (r.k === "ending") return '<span class="badge adj">Fin le ' + fmtDate(r.date) + "</span>";
+  if (r.k === "retire") return '<span class="badge low">Retiré</span>';
+  return "";
+}
+/* Liste des points réglementaires à surveiller, pour les décideurs */
+function regIssues() {
+  const st = stocks(), out = [];
+  for (const [id, p] of activeProducts()) {
+    const r = regStatus(p), q = st[id] || 0;
+    if (r.k === "banned") out.push({ id, p, lvl: q > 0 ? 3 : 1, txt: "Utilisation interdite depuis le " + fmtDate(r.date) + (q > 0 ? " — " + fmtN(q) + " " + U(p) + " en stock à éliminer (PPNU)" : "") });
+    else if (r.k === "soon" || r.k === "warn" || r.k === "ending") out.push({ id, p, lvl: r.k === "soon" ? 3 : r.k === "warn" ? 2 : 1, txt: "Fin d'utilisation le " + fmtDate(r.date) + " (dans " + r.days + " j)" + (r.fd ? " · fin de distribution le " + fmtDate(r.fd) : "") + (q > 0 ? " · stock : " + fmtN(q) + " " + U(p) : "") });
+    else if (r.k === "retire") out.push({ id, p, lvl: 2, txt: "AMM retirée (" + r.e.etat + ") — vérifier les délais sur E-Phy" });
+    else if (r.k === "ok" && r.usages.length) {
+      const u = r.usages[0];
+      out.push({ id, p, lvl: daysUntil(u.finUtilisation) <= REG_WARN ? 2 : 1, txt: r.usages.length + " usage(s) en fin d'utilisation, dont « " + u.usage + " » le " + fmtDate(u.finUtilisation) });
+    }
+    else if (r.k === "unknown") out.push({ id, p, lvl: 0, txt: "N° AMM « " + p.amm + " » introuvable dans E-Phy — à vérifier" });
+    if (p.commande && p.commande.enCours && r.fd && r.fd < today()) out.push({ id, p, lvl: 3, txt: "Commande en cours alors que la distribution est arrêtée depuis le " + fmtDate(r.fd) });
+  }
+  return out.sort((a, b) => b.lvl - a.lvl || norm(a.p.nom).localeCompare(norm(b.p.nom)));
+}
+const regUrgent = () => regIssues().filter(i => i.lvl >= 2).length;
+
 function applyState(st) {
-  S.version = st.version; S.me = st.me;
+  S.version = st.version; S.me = st.me; S.ephyMaj = st.ephyMaj || null; S.ephyInfo = st.ephyInfo || "";
   S.produits = st.produits || {}; S.mouvements = st.mouvements || {}; S.alertes = st.alertes || {}; S.users = st.users || {};
 }
 async function reload() {
@@ -317,7 +361,7 @@ function render() {
 }
 function rowProduct(id, p, st) {
   const q = st[id] || 0;
-  const badges = (p.commande && p.commande.enCours ? '<span class="badge cmd">Commande en cours</span>' : "") +
+  const badges = regBadge(p) + (p.commande && p.commande.enCours ? '<span class="badge cmd">Commande en cours</span>' : "") +
     (q < 0 ? '<span class="badge neg">Négatif</span>' : (isLow(p, q) ? '<span class="badge low">Stock bas</span>' : ""));
   return '<button class="it" data-a="pickp" data-id="' + esc(id) + '"><div class="main"><div class="nm">' + esc(p.nom) + badges + '</div>' +
     '<div class="meta">' + esc(bidonsTxt(p, q)) + (p.amm ? " · AMM " + esc(p.amm) : "") + '</div></div>' +
@@ -403,7 +447,7 @@ const VIEWS = {};
 
 VIEWS.config = {
   html() {
-    return topbar("Stock phyto") + '<div class="note bad"><b>Appli pas encore configurée.</b><br>Ouvrez le fichier <code>index.html</code> et remplissez <code>SUPABASE_URL</code> et <code>SUPABASE_KEY</code> en haut du script (voir le fichier LISEZMOI).</div>';
+    return topbar("Stock phyto") + '<div class="note bad"><b>Appli pas encore configurée.</b><br>Le fichier <code>config.js</code> est absent ou incomplet : il doit contenir l\'adresse et la clé publique de votre projet Supabase (voir le fichier LISEZMOI).</div>';
   }
 };
 VIEWS.loading = {
@@ -484,11 +528,11 @@ function keyPress(k) {
 VIEWS.home = {
   live: true,
   html() {
-    const al = openAlerts().length, cmd = openOrders().length;
+    const al = openAlerts().length + (isDec() ? regUrgent() : 0), cmd = openOrders().length;
     let h = topbar("Stock phyto");
     h += '<p class="muted" style="margin:0 0 14px">Certiphyto : <b>' + esc(S.me.certiphyto || "non renseigné") + "</b></p>";
     if (isDec()) {
-      if (al) h += '<button class="big alert" data-a="go" data-v="alertes"><span class="ic">⚠️</span><span>' + al + " alerte" + (al > 1 ? "s" : "") + ' à traiter<span class="sub">Erreurs de stock signalées</span></span></button>';
+      if (al) h += '<button class="big alert" data-a="go" data-v="alertes"><span class="ic">⚠️</span><span>' + al + " alerte" + (al > 1 ? "s" : "") + ' à traiter<span class="sub">Stock et réglementation</span></span></button>';
       h += '<button class="big pri" data-a="startPick" data-m="entree"><span class="ic">📥</span><span>Réception livraison<span class="sub">Entrer des produits dans le stock</span></span></button>';
       h += '<button class="big out" data-a="startPick" data-m="sortie"><span class="ic">📤</span><span>Sortie de produit<span class="sub">Je prends un produit</span></span></button>';
       h += '<div class="grid2">' +
@@ -545,6 +589,7 @@ function renderPickList() {
   let ps = activeProducts();
   if (q) ps = ps.filter(([, p]) => norm(p.nom).includes(q) || (p.eans || []).some(e => e.includes(q)) || norm(p.amm).includes(q));
   if (S.f.mode === "sortie" && !q) ps.sort((a, b) => ((st[b[0]] || 0) > 0) - ((st[a[0]] || 0) > 0));
+  if (S.f.mode === "sortie") ps.sort((a, b) => isBanned(a[1]) - isBanned(b[1]));
   if (!ps.length) { el.innerHTML = '<div class="note info">' + (q ? "Aucun produit ne correspond." : "Aucun produit dans le stock pour l'instant.") + "</div>"; return; }
   el.innerHTML = '<div class="list">' + ps.map(([id, p]) => rowProduct(id, p, st)).join("") + "</div>";
 }
@@ -569,6 +614,10 @@ function handleBarcode(code) {
 }
 async function pickProduct(pid) {
   const m = S.f.mode;
+  if ((m === "sortie" || m === "assoc") && isBanned(S.produits[pid])) {
+    const r = regStatus(S.produits[pid]);
+    return modal('<h3>⛔ Utilisation interdite</h3><p>La date limite d\'utilisation de <b>' + esc(S.produits[pid].nom) + "</b> était le <b>" + fmtDate(r.date) + "</b>.</p><p class=\"muted\">Ce produit ne doit plus être utilisé. Il doit être mis de côté et éliminé comme PPNU (produit phytopharmaceutique non utilisable).</p><div class=\"acts\"><button class=\"btn pri\" data-m=\"cancel\">Compris</button></div>");
+  }
   if (S.f.pendingEan) {
     const p = S.produits[pid];
     const ok = await act("add_ean", { p_produit_id: pid, p_ean: S.f.pendingEan }, "Code-barre associé à " + p.nom);
@@ -593,6 +642,8 @@ VIEWS.qty = {
     const title = f.mode === "entree" ? "Réception" : f.mode === "assoc" ? "Régularisation" : "Sortie";
     let h = topbar(title, f.mode === "assoc" ? "alertes" : "home");
     h += '<div class="card"><div style="font-size:21px;font-weight:700">' + esc(p.nom) + '</div><div class="muted">En stock : <b id="curst">' + fmtN(st) + " " + esc(u) + "</b> " + esc(bidonsTxt(p, st)) + "</div></div>";
+    { const r = regStatus(p); if ((r.k === "soon" || r.k === "warn") && f.mode !== "entree") h += '<div class="note warn">Fin d\'utilisation autorisée le <b>' + fmtDate(r.date) + "</b> (dans " + r.days + " jours).</div>";
+      if ((r.k === "soon" || r.k === "warn" || r.k === "ending" || r.k === "retire") && f.mode === "entree") h += '<div class="note warn">Attention : ce produit est en fin d\'autorisation' + (r.date ? " (utilisation jusqu'au " + fmtDate(r.date) + ")" : "") + ".</div>"; }
     if (f.mode === "assoc") { const a = S.alertes[f.alertId] || {}; h += '<div class="note info">Signalé par <b>' + esc(a.prenom) + "</b> le " + fmtDate(a.date) + " : « " + esc(a.nomSaisi) + " », " + fmtN(a.quantite) + " " + esc(a.saisie === "bidons" ? "bidon(s)" : a.unite) + (a.note ? "<br>Note : " + esc(a.note) : "") + "</div>"; }
     h += '<label class="f">Je compte en</label><div class="seg"><button data-a="unit" data-u="bidons" class="' + (f.unit === "bidons" ? "on" : "") + '">Bidons</button><button data-a="unit" data-u="vol" class="' + (f.unit === "vol" ? "on" : "") + '">' + (u === "kg" ? "Kilos" : "Litres") + "</button></div>";
     if (f.unit === "bidons" && !(+p.contenance > 0)) h += '<label class="f">Contenance d\'un bidon (' + esc(u) + ')</label><input class="in" id="cont" inputmode="decimal" placeholder="ex. 5" value="' + esc(f.cont || "") + '">';
@@ -694,8 +745,48 @@ function productForm(p) {
     '<label class="f">Unité</label><div class="seg" id="p_un"><button data-a="punit" data-u="L" class="' + (u === "L" ? "on" : "") + '">Litres</button><button data-a="punit" data-u="kg" class="' + (u === "kg" ? "on" : "") + '">Kilos</button></div>' +
     '<label class="f">Contenance d\'un bidon <small>(en L ou kg)</small></label><input class="in" id="p_cont" inputmode="decimal" value="' + esc(p.contenance ?? "") + '" placeholder="ex. 5">' +
     '<label class="f">Code(s)-barre <small>(séparés par des virgules)</small></label><div class="row" style="gap:8px"><input class="in" id="p_ean" inputmode="numeric" value="' + esc((p.eans || []).join(", ")) + '"><button class="btn" style="flex:none;min-height:52px;font-size:22px" data-a="scanEan">📷</button></div>' +
-    '<label class="f">N° AMM <small>(facultatif)</small></label><input class="in" id="p_amm" value="' + esc(p.amm || "") + '">' +
+    '<label class="f">N° AMM <small>(pour les alertes de fin d\'utilisation)</small></label><div class="row" style="gap:8px"><input class="in" id="p_amm" inputmode="numeric" value="' + esc(p.amm || "") + '"><button class="btn" style="flex:none;min-height:52px" data-a="ephySearch">🔍 E-Phy</button></div>' +
+    '<div id="p_ephy" class="muted" style="font-size:14px;margin-top:6px">' + ephyLine(p.ephy, p.amm) + "</div>" +
     '<label class="f">Seuil de stock bas <small>(facultatif, en L ou kg)</small></label><input class="in" id="p_seuil" inputmode="decimal" value="' + esc(p.seuil ?? "") + '">';
+}
+function ephyLine(e, amm) {
+  if (!String(amm || "").trim()) return S.ephyMaj ? "Touchez « 🔍 E-Phy » pour retrouver l'AMM à partir du nom." : "";
+  if (!e) return S.ephyMaj ? "⚠️ AMM non trouvée dans E-Phy." : "Données E-Phy pas encore importées.";
+  const p = { amm, ephy: e }, r = regStatus(p);
+  return "E-Phy : <b>" + esc(e.nom) + "</b> · " + esc(e.etat || "?") + (r.date ? " · utilisation jusqu'au <b>" + fmtDate(r.date) + "</b>" : "");
+}
+async function ephySearch() {
+  const nomEl = $("#p_nom"), ammEl = $("#p_amm");
+  if (!S.ephyMaj) return toast("Importez d'abord les données E-Phy (Alertes → Données E-Phy).", "err", 5000);
+  const start = (ammEl.value.trim() || nomEl.value.trim());
+  $("#modal").innerHTML = '<div class="bk"><div class="bx" style="max-height:85vh;overflow:auto"><h3>Rechercher dans E-Phy</h3>' +
+    '<input class="in" id="es_q" placeholder="Nom commercial ou n° AMM" value="' + esc(start) + '"><div id="es_r" style="margin-top:10px"></div>' +
+    '<div class="acts"><button class="btn" id="es_x">Fermer</button></div></div></div>';
+  const q = $("#es_q"), out = $("#es_r");
+  $("#es_x").onclick = () => { $("#modal").innerHTML = ""; };
+  let timer = null, seq = 0, results = [];
+  const run = async () => {
+    const my = ++seq, v = q.value.trim();
+    if (v.length < 2) { out.innerHTML = '<p class="muted">Tapez au moins 2 caractères.</p>'; return; }
+    out.innerHTML = '<p class="muted">Recherche…</p>';
+    try { results = await api("ephy_search", { p_token: S.token, p_q: v }); } catch (e) { if (my === seq) out.innerHTML = '<p class="err">' + esc(e.message) + "</p>"; return; }
+    if (my !== seq) return;
+    out.innerHTML = results.length ? '<div class="list">' + results.map((e, i) => {
+      const r = regStatus({ amm: e.amm, ephy: e });
+      return '<button class="it" data-i="' + i + '"><div class="main"><div class="nm" style="font-size:15px">' + esc(e.nom) + " " + regBadge({ amm: e.amm, ephy: e }) + '</div><div class="meta">AMM ' + esc(e.amm) + " · " + esc(e.etat) + (e.secondsNoms ? " · aussi : " + esc(e.secondsNoms.slice(0, 80)) : "") + (e.titulaire ? " · " + esc(e.titulaire) : "") + "</div></div></button>";
+    }).join("") + "</div>" : '<p class="muted">Aucun produit trouvé.</p>';
+  };
+  q.addEventListener("input", () => { clearTimeout(timer); timer = setTimeout(run, 300); });
+  out.addEventListener("click", ev => {
+    const b = ev.target.closest("[data-i]"); if (!b) return;
+    const e = results[+b.dataset.i];
+    ammEl.value = e.amm;
+    if (!nomEl.value.trim()) nomEl.value = e.nom;
+    $("#p_ephy").innerHTML = ephyLine(e, e.amm);
+    $("#modal").innerHTML = "";
+    toast("AMM " + e.amm + " renseignée. Pensez à enregistrer.");
+  });
+  q.focus(); run();
 }
 function readProductForm() {
   const on = $("#p_un .on");
@@ -734,6 +825,7 @@ VIEWS.produit = {
     const q = +p.stock || 0, c = p.commande || {};
     let h = topbar("Fiche produit", "stock") + "<h1>" + esc(p.nom) + "</h1>";
     h += '<div class="card"><div class="muted">Stock actuel</div><div style="font-size:30px;font-weight:800" id="pst">' + fmtN(q) + " " + esc(U(p)) + '</div><div class="muted">' + esc(bidonsTxt(p, q)) + "</div></div>";
+    h += "<h2>Réglementation</h2>" + regCard(p);
     h += "<h2>Commande</h2><div class=\"card\">" + (c.enCours
       ? '<div><span class="badge cmd" style="margin:0">Commande en cours</span></div><p class="muted" style="margin:8px 0">Par ' + esc(c.par || "?") + " le " + fmtDate(c.le) + (c.note ? "<br>« " + esc(c.note) + " »" : "") + '</p><button class="btn" data-a="orderOff" data-id="' + esc(S.f.pid) + '">Retirer la commande</button>'
       : '<p class="muted" style="margin:0 0 10px">Aucune commande en cours.</p><button class="btn pri" data-a="orderOn" data-id="' + esc(S.f.pid) + '">🛒 Marquer « commande en cours »</button>') + "</div>";
@@ -745,6 +837,24 @@ VIEWS.produit = {
     return h;
   }
 };
+function regCard(p) {
+  const r = regStatus(p), e = p.ephy;
+  if (r.k === "noamm") return '<div class="card"><p class="muted" style="margin:0">Aucun n° AMM : renseignez-le plus bas (bouton « 🔍 E-Phy ») pour être alerté des fins d\'utilisation.</p></div>';
+  if (r.k === "unknown") return '<div class="card"><p style="margin:0">AMM <b>' + esc(p.amm) + "</b> " + (S.ephyMaj ? "introuvable dans E-Phy : vérifiez le numéro." : ": données E-Phy pas encore importées.") + "</p></div>";
+  const cls = r.k === "banned" ? "bad" : (r.k === "soon" || r.k === "warn" || r.k === "retire") ? "warn" : r.k === "ending" ? "info" : "ok";
+  let h = '<div class="note ' + cls + '" style="margin-top:0">';
+  h += r.k === "banned" ? "⛔ <b>Utilisation interdite depuis le " + fmtDate(r.date) + "</b>. Le stock restant doit être éliminé (PPNU)."
+    : r.date ? "⚠️ <b>Utilisation autorisée jusqu'au " + fmtDate(r.date) + "</b> (dans " + r.days + " jours)."
+    : r.k === "retire" ? "⚠️ AMM retirée : vérifiez les délais sur ephy.anses.fr." : "✓ Produit autorisé.";
+  h += "</div><div class=\"card\" style=\"font-size:15px\"><div><b>" + esc(e.nom) + "</b> — AMM " + esc(e.amm) + "</div><div class=\"muted\">" + esc(e.etat) + (e.titulaire ? " · " + esc(e.titulaire) : "") + "</div>";
+  if (e.dateRetrait) h += "<div>Retrait de l'AMM : " + fmtDate(e.dateRetrait) + "</div>";
+  if (e.finDistribution) h += "<div>Fin de distribution : " + fmtDate(e.finDistribution) + "</div>";
+  if (e.finUtilisation) h += "<div>Fin d'utilisation : <b>" + fmtDate(e.finUtilisation) + "</b></div>";
+  const us = (e.usagesFin || []).filter(u => u.finUtilisation);
+  if (us.length) h += '<details style="margin-top:8px"><summary>' + us.length + " usage(s) avec date de fin</summary>" + us.map(u => '<div style="margin-top:4px;font-size:14px">' + esc(u.usage) + " — fin d'utilisation " + fmtDate(u.finUtilisation) + (u.finUtilisation < today() ? " (passé)" : "") + "</div>").join("") + "</details>";
+  h += '<div class="muted" style="font-size:12px;margin-top:8px">Données E-Phy - Anses' + (S.ephyMaj ? ", importées le " + fmtDate(String(S.ephyMaj).slice(0, 10)) : "") + ". Seules les décisions publiées par l\'Anses font foi.</div></div>";
+  return h;
+}
 async function saveProduct() {
   const d = readProductForm();
   if (await act("save_produit", { p_id: S.f.pid, ...d }, "Modifications enregistrées")) render();
@@ -799,6 +909,174 @@ function renderStockList() {
   if (!isDec()) el.querySelectorAll(".it").forEach(b => { b.classList.add("static"); b.removeAttribute("data-a"); });
 }
 
+/* ---------- Données E-Phy (import) ---------- */
+const EPHY_PAGE = "https://www.data.gouv.fr/fr/datasets/575e9fac88ee38072a640390/";
+const EPHY_ZIPS = ["https://www.data.gouv.fr/api/1/datasets/r/98f7cac6-6b29-4859-8739-51b825196959",
+                   "https://www.data.gouv.fr/api/1/datasets/r/cb51408e-2b97-43a4-94e2-c0de5c3bf5b2"];
+VIEWS.ephy = {
+  html() {
+    if (!isDec()) return topbar("E-Phy", "home") + '<div class="note bad">Réservé aux décideurs.</div>';
+    let h = topbar("Données E-Phy", "alertes") + "<h1>Données E-Phy</h1>";
+    h += '<p class="muted">Le catalogue officiel de l\'Anses (AMM, retraits, dates de fin de distribution et d\'utilisation) est publié chaque semaine sur data.gouv.fr. L\'appli s\'en sert pour les alertes et pour bloquer les sorties de produits interdits.</p>';
+    h += '<div class="card">' + (S.ephyMaj ? "Dernière mise à jour : <b>" + fmtDate(String(S.ephyMaj).slice(0, 10)) + "</b><br><span class=\"muted\" style=\"font-size:14px\">" + esc(S.ephyInfo) + "</span>" : "<b>Jamais importées.</b>") + "</div>";
+    h += '<div id="eph_prog"></div>';
+    h += '<button class="btn pri full" id="eph_auto" data-a="ephyAuto">⬇️ Mettre à jour automatiquement</button>';
+    h += '<p class="muted" style="font-size:13px;margin:8px 2px 16px">De préférence sur ordinateur : le fichier fait quelques Mo et la lecture prend 10 à 30 secondes.</p>';
+    h += '<div class="card"><b>Si la mise à jour automatique échoue</b><ol style="margin:8px 0 10px;padding-left:20px;font-size:15px"><li>Ouvrez <a href="' + EPHY_PAGE + '" target="_blank" rel="noopener">la page E-Phy sur data.gouv.fr</a>.</li><li>Téléchargez le fichier ZIP <b>decisionamm-intrant-format-csv</b> (UTF-8 ou Windows-1252, peu importe).</li><li>Choisissez-le ci-dessous, sans le décompresser.</li></ol>' +
+      '<label class="btn full" style="cursor:pointer">📂 Choisir le fichier ZIP<input type="file" id="eph_file" accept=".zip,application/zip" hidden></label></div>';
+    return h;
+  },
+  after() { const i = $("#eph_file"); if (i) i.addEventListener("change", () => { const f = i.files && i.files[0]; if (f) ephyImport(f); }); }
+};
+function ephyProg(html, kind = "info") { const el = $("#eph_prog"); if (el) el.innerHTML = '<div class="note ' + kind + '">' + html + "</div>"; }
+let libsP = null;
+function loadLibs() {
+  const one = src => new Promise((res, rej) => { const s = document.createElement("script"); s.src = src; s.onload = res; s.onerror = () => rej(new Error("Bibliothèque non chargée : " + src)); document.head.appendChild(s); });
+  if (!libsP) libsP = Promise.all([window.JSZip ? 0 : one("https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"),
+                                   window.Papa ? 0 : one("https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js")]).catch(e => { libsP = null; throw e; });
+  return libsP;
+}
+async function ephyAuto() {
+  if (S.busy) return;
+  ephyProg("Téléchargement depuis data.gouv.fr…");
+  let blob = null, lastErr = "";
+  for (const url of EPHY_ZIPS) {
+    try { const r = await fetch(url); if (!r.ok) throw new Error("HTTP " + r.status); blob = await r.blob(); break; }
+    catch (e) { lastErr = e.message; }
+  }
+  if (!blob) return ephyProg("Téléchargement automatique impossible depuis le navigateur (" + esc(lastErr) + "). Utilisez la méthode manuelle ci-dessous.", "warn");
+  ephyImport(blob);
+}
+function decodeText(u8) {
+  try { return new TextDecoder("utf-8", { fatal: true }).decode(u8); }
+  catch (e) { return new TextDecoder("windows-1252").decode(u8); }
+}
+function parseDateFr(v) {
+  v = String(v || "").trim(); let m;
+  if ((m = v.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/))) return m[3] + "-" + pad(m[2]) + "-" + pad(m[1]);
+  if ((m = v.match(/^(\d{4})-(\d{2})-(\d{2})/))) return m[1] + "-" + m[2] + "-" + m[3];
+  return null;
+}
+const hnorm = h => norm(h).replace(/[^a-z0-9]+/g, " ").trim();
+const findCol = (headers, test) => headers.findIndex(h => test(hnorm(h)));
+function colsOf(headers) {
+  const c = {
+    amm: findCol(headers, h => /\bamm\b/.test(h) && !/reference/.test(h)),
+    nom: findCol(headers, h => /^nom (du )?produit$/.test(h) || h === "nom commercial"),
+    seconds: findCol(headers, h => /seconds? noms?/.test(h)),
+    titulaire: findCol(headers, h => /titulaire/.test(h)),
+    type: findCol(headers, h => /^type (de )?produit$/.test(h)),
+    etat: findCol(headers, h => /^etat/.test(h) && !/usage/.test(h)),
+    etatUsage: findCol(headers, h => /^etat/.test(h) && /usage/.test(h)),
+    retrait: findCol(headers, h => /retrait/.test(h)),
+    finDist: findCol(headers, h => /fin/.test(h) && /distribution/.test(h)),
+    finUtil: findCol(headers, h => /fin/.test(h) && /utilisation/.test(h)),
+    usage: findCol(headers, h => /identifiant usage lib/.test(h)),
+    usage2: findCol(headers, h => /^identifiant usage$/.test(h) || /^usage$/.test(h) || /libelle usage/.test(h))
+  };
+  if (c.usage < 0) c.usage = c.usage2;
+  return c;
+}
+function parseCsv(text) {
+  const nl = text.indexOf("\n"), first = text.slice(0, nl > 0 ? nl : 2000);
+  const delim = (first.split(";").length >= first.split(",").length) ? ";" : ",";
+  const r = Papa.parse(text, { delimiter: delim, skipEmptyLines: true });
+  return { headers: (r.data[0] || []).map(h => String(h).replace(/^﻿/, "").trim()), rows: r.data.slice(1) };
+}
+async function ephyImport(fileOrBlob) {
+  if (S.busy) return;
+  S.busy = true;
+  const btn = $("#eph_auto"); if (btn) btn.disabled = true;
+  try {
+    ephyProg("Chargement des outils de lecture…");
+    await loadLibs();
+    ephyProg("Ouverture de l'archive…");
+    const zip = await JSZip.loadAsync(fileOrBlob);
+    const names = Object.keys(zip.files).filter(n => !zip.files[n].dir && /\.csv$/i.test(n));
+    if (!names.length) throw new Error("Aucun fichier CSV dans cette archive. Choisissez l'archive « decisionamm-intrant-format-csv » (pas le XML).");
+    const base = n => n.split("/").pop().toLowerCase();
+    const prodName = names.find(n => /^produits?([_ -](utf-?8|windows.*|win.*))?\.csv$/i.test(base(n)))
+      || names.find(n => /produit/i.test(base(n)) && !/usage|substance|phrase|condition|mfsc|melange|mixte|permis|classe|fonction/i.test(base(n)));
+    const usgName = names.find(n => /^produits?_usages/i.test(base(n))) || names.find(n => /usage/i.test(base(n)) && /produit/i.test(base(n)));
+    if (!prodName && !usgName) throw new Error("Fichiers des produits introuvables dans l'archive (" + names.map(base).join(", ") + ").");
+    const recs = new Map(), diag = [];
+    const getRec = amm => {
+      const k = String(amm || "").replace(/[^0-9A-Za-z]/g, "").toUpperCase(); if (!k) return null;
+      if (!recs.has(k)) recs.set(k, { amm: k, nom: "", seconds_noms: "", titulaire: "", type_produit: "", etat: "", date_retrait: null, fin_distribution: null, fin_utilisation: null, _ufd: null, _ufu: null, _us: new Map() });
+      return recs.get(k);
+    };
+    const maxD = (a, b) => (!a ? b : !b ? a : a > b ? a : b);
+    if (prodName) {
+      ephyProg("Lecture de la liste des produits…");
+      const { headers, rows } = parseCsv(decodeText(await zip.file(prodName).async("uint8array")));
+      const c = colsOf(headers);
+      diag.push(base(prodName) + " : " + rows.length + " lignes");
+      if (c.amm < 0) throw new Error("Colonne « numéro AMM » introuvable dans " + base(prodName) + ". Colonnes : " + headers.join(" | "));
+      for (const r of rows) {
+        const rec = getRec(r[c.amm]); if (!rec) continue;
+        if (c.nom >= 0 && r[c.nom]) rec.nom = r[c.nom].trim();
+        if (c.seconds >= 0 && r[c.seconds]) rec.seconds_noms = r[c.seconds].trim();
+        if (c.titulaire >= 0 && r[c.titulaire]) rec.titulaire = r[c.titulaire].trim();
+        if (c.type >= 0 && r[c.type]) rec.type_produit = r[c.type].trim();
+        if (c.etat >= 0 && r[c.etat]) rec.etat = r[c.etat].trim();
+        if (c.retrait >= 0) rec.date_retrait = maxD(rec.date_retrait, parseDateFr(r[c.retrait]));
+        if (c.finDist >= 0) rec.fin_distribution = maxD(rec.fin_distribution, parseDateFr(r[c.finDist]));
+        if (c.finUtil >= 0) rec.fin_utilisation = maxD(rec.fin_utilisation, parseDateFr(r[c.finUtil]));
+      }
+    }
+    if (usgName) {
+      ephyProg("Lecture des usages (le plus long fichier)…");
+      await sleep(30);
+      const { headers, rows } = parseCsv(decodeText(await zip.file(usgName).async("uint8array")));
+      const c = colsOf(headers);
+      diag.push(base(usgName) + " : " + rows.length + " lignes");
+      if (c.amm >= 0) {
+        const limit = new Date(Date.now() - 2 * 365 * 86400000).toISOString().slice(0, 10);
+        for (const r of rows) {
+          const rec = getRec(r[c.amm]); if (!rec) continue;
+          if (!rec.nom && c.nom >= 0 && r[c.nom]) rec.nom = r[c.nom].trim();
+          if (!rec.etat && c.etat >= 0 && r[c.etat]) rec.etat = r[c.etat].trim();
+          const fd = c.finDist >= 0 ? parseDateFr(r[c.finDist]) : null, fu = c.finUtil >= 0 ? parseDateFr(r[c.finUtil]) : null;
+          rec._ufd = maxD(rec._ufd, fd); rec._ufu = maxD(rec._ufu, fu);
+          if (fu && fu >= limit && c.usage >= 0) {
+            const lab = String(r[c.usage] || "").trim().slice(0, 160);
+            if (lab && !rec._us.has(lab)) rec._us.set(lab, { usage: lab, finDistribution: fd, finUtilisation: fu, etat: c.etatUsage >= 0 ? String(r[c.etatUsage] || "").trim() : "" });
+          }
+        }
+      } else diag.push("(colonne AMM absente des usages : dates par usage ignorées)");
+    }
+    /* Synthèse : un produit retiré prend la date de fin la plus tardive de ses usages */
+    const out = [];
+    let nFin = 0;
+    for (const rec of recs.values()) {
+      const retire = /retir/i.test(rec.etat);
+      if (retire || !prodName) {
+        if (!rec.fin_utilisation && rec._ufu) rec.fin_utilisation = rec._ufu;
+        if (!rec.fin_distribution && rec._ufd) rec.fin_distribution = rec._ufd;
+      }
+      if (rec.fin_utilisation) nFin++;
+      const us = [...rec._us.values()].sort((a, b) => a.finUtilisation.localeCompare(b.finUtilisation)).slice(0, 40);
+      out.push({ amm: rec.amm, nom: rec.nom, seconds_noms: rec.seconds_noms, titulaire: rec.titulaire, type_produit: rec.type_produit, etat: rec.etat,
+        date_retrait: rec.date_retrait, fin_distribution: rec.fin_distribution, fin_utilisation: rec.fin_utilisation, usages_fin: us });
+    }
+    if (!out.length) throw new Error("Aucun produit lu (" + diag.join(" ; ") + ").");
+    const info = out.length + " produits, dont " + nFin + " avec une date de fin d'utilisation";
+    const CH = 800;
+    for (let i = 0; i < out.length; i += CH) {
+      ephyProg("Envoi vers la base : " + Math.min(i + CH, out.length) + " / " + out.length + "…");
+      await api("ephy_import", { p_token: S.token, p_rows: out.slice(i, i + CH), p_last: i + CH >= out.length, p_info: info });
+    }
+    S.busy = false;
+    await reload();
+    render();
+    const withAmm = activeProducts().filter(([, p]) => String(p.amm || "").trim());
+    const found = withAmm.filter(([, p]) => p.ephy).length;
+    ephyProg("✅ Import terminé : " + esc(info) + ".<br>Vos produits reconnus : <b>" + found + " / " + withAmm.length + "</b> (parmi ceux qui ont un n° AMM).<br><small>" + esc(diag.join(" · ")) + "</small>", "ok");
+  } catch (e) {
+    ephyProg("❌ " + esc(e.message || String(e)), "bad");
+  } finally { S.busy = false; const b = $("#eph_auto"); if (b) b.disabled = false; }
+}
+
 /* ---------- Commandes ---------- */
 VIEWS.commandes = {
   live: true,
@@ -818,8 +1096,18 @@ VIEWS.alertes = {
   live: true,
   html() {
     const open = openAlerts();
-    let h = topbar("Alertes", "home") + "<h1>Alertes stock</h1>";
-    if (!open.length) h += '<div class="note ok">Aucune alerte à traiter. 👍</div>';
+    let h = topbar("Alertes", "home") + "<h1>Alertes</h1>";
+    const regs = regIssues();
+    h += "<h2>Réglementation (E-Phy)</h2>";
+    if (!S.ephyMaj) h += '<div class="note warn">Données E-Phy jamais importées : aucune alerte de fin d\'utilisation possible.</div>';
+    else if (daysUntil(String(S.ephyMaj).slice(0, 10)) < -14) h += '<div class="note warn">Données E-Phy du ' + fmtDate(String(S.ephyMaj).slice(0, 10)) + " : pensez à les mettre à jour (elles changent chaque semaine).</div>";
+    h += regs.length ? '<div class="list">' + regs.map(i => '<button class="it" data-a="go" data-v="produit" data-pid="' + esc(i.id) + '"><div class="main"><div class="nm" style="font-size:16px">' + (i.lvl >= 3 ? "🔴 " : i.lvl === 2 ? "🟠 " : "⚪ ") + esc(i.p.nom) + '</div><div class="meta">' + esc(i.txt) + "</div></div><div>›</div></button>").join("") + "</div>"
+      : (S.ephyMaj ? '<div class="note ok">Aucun produit concerné.</div>' : "");
+    const noAmm = activeProducts().filter(([, p]) => !String(p.amm || "").trim()).length;
+    if (noAmm) h += '<p class="muted" style="font-size:13px">' + noAmm + " produit(s) sans n° AMM ne sont pas surveillés.</p>";
+    h += '<div class="foot" style="margin-top:10px"><button class="btn" data-a="go" data-v="ephy">📚 Données E-Phy</button></div>';
+    h += "<h2>Stock</h2>";
+    if (!open.length) h += '<div class="note ok">Aucune alerte de stock à traiter. 👍</div>';
     for (const [id, a] of open) {
       if (a.type === "produit_inconnu") {
         h += '<div class="card"><div><span class="badge neg" style="margin:0">Produit hors liste</span></div><p style="margin:8px 0"><b>' + esc(a.prenom) + "</b> a utilisé <b>" + fmtN(a.quantite) + " " + esc(a.saisie === "bidons" ? "bidon(s)" : a.unite) + "</b> de « <b>" + esc(a.nomSaisi) + "</b> » le " + fmtDate(a.date) + "." +
@@ -988,7 +1276,9 @@ const A = {
   delMv: d => delMv(d.id),
   editUser: d => go("useredit", { uid: d.id }),
   urole: d => { S.f.role = d.r; const keep = { pre: $("#u_pre").value, cert: $("#u_cert").value, code: $("#u_code").value }; render(); $("#u_pre").value = keep.pre; $("#u_cert").value = keep.cert; $("#u_code").value = keep.code; },
-  saveUser: () => saveUser()
+  saveUser: () => saveUser(),
+  ephySearch: () => ephySearch(),
+  ephyAuto: () => ephyAuto()
 };
 document.addEventListener("click", e => {
   const b = e.target.closest("[data-a]");
