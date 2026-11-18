@@ -1437,11 +1437,36 @@ function trtCalc(o) {
     return { produitId: x.produitId, nom: p.nom || x.nom, unite: u, contenant: p.contenant || "bidon", contenance: +p.contenance || null,
       dose: d, du: x.du, maxHa: max > 0 ? max : null, qha, how, qtot, qcuve: n ? qtot / n : NaN, qhaApplique: qha > 0 ? qha * (o.r2 ? 0.5 : 1) : NaN };
   });
+  /* Arrondis « opérateur » : produit par cuve au pas de 0,1 L/kg si possible (sinon 0,05 ou 0,01 pour rester à ±10 %) ;
+     arrondi au plus proche, ou vers le bas si la dose maximale/ha serait dépassée. */
+  for (const x of prods) {
+    if (!(x.qcuve > 0) || !(seff > 0)) continue;
+    // on prend le pas le plus « rond » (0,1 puis 0,05 puis 0,01) qui reste à moins de 10 % du calcul
+    const q = x.qcuve; let r = NaN, bas = false;
+    for (const st of [0.1, 0.05, 0.01, 0.001]) {
+      let v = Math.round(Math.round(q / st) * st * 1000) / 1000, b = false;
+      if (x.maxHa && v * n / seff > x.maxHa + 1e-9) { v = Math.round(Math.floor(q / st + 1e-9) * st * 1000) / 1000; b = true; }
+      if (v > 0 && Math.abs(v - q) / q <= 0.1 + 1e-9) { r = v; bas = b; break; }
+    }
+    if (!(r > 0)) r = Math.round(q * 1000) / 1000;
+    x.qcuveCalc = q; x.qcuve = r; x.arrBas = bas;
+    x.qtot = r * n; x.qhaCalc = x.qha; x.qha = x.qtot / seff; x.qhaApplique = x.qha * (o.r2 ? 0.5 : 1);
+    if (Math.abs(x.qha - x.qhaCalc) / x.qhaCalc > 0.1) warns.push("« " + x.nom + " » : l'arrondi par cuve modifie la dose de plus de 10 % (" + fmtD(x.qhaCalc) + " → " + fmtD(x.qha) + " " + x.unite + "/ha).");
+  }
   const liq = prods.filter(x => x.unite === "L" && x.qcuve > 0).reduce((s, x) => s + x.qcuve, 0);
-  const eauCuve = bCuve - liq;
-  if (n && eauCuve < 0) errs.push("Les produits liquides dépassent le volume de la cuve : vérifiez les doses ou le volume/ha.");
+  const eauCalc = bCuve - liq;
+  /* Eau par cuve : pas de 50 L (sinon 10 ou 5 L pour rester à ±5 %), sans dépasser la capacité de la cuve. */
+  let eauCuve = eauCalc;
+  if (eauCalc > 0) {
+    const st = [50, 10, 5, 1].find(t => Math.abs(Math.round(eauCalc / t) * t - eauCalc) / eauCalc <= 0.05) || 1;
+    eauCuve = Math.round(eauCalc / st) * st;
+    if (cap > 0 && eauCuve + liq > cap + 1e-9) eauCuve = Math.floor((cap - liq) / 10) * 10;   // cuve pleine : pas de 10 L
+    if (!(eauCuve > 0)) eauCuve = Math.round(eauCalc);
+  }
+  if (n && eauCalc < 0) errs.push("Les produits liquides dépassent le volume de la cuve : vérifiez les doses ou le volume/ha.");
   if (o.r2 && V > 0) warns.push("Un rang sur deux : chaque passage applique une demi-dose par hectare ; les autres rangs sont couverts au passage suivant. Interdit avec les matériels anti-dérive qui doivent passer dans tous les rangs.");
-  return { surf, seff, V, cap, B, n, bCuve, eauCuve, prods, errs, warns, ok: !errs.length };
+  const bCuveCalc = bCuve, bCuveR = n ? eauCuve + liq : 0;
+  return { surf, seff, V, cap, B: bCuveR * n, Bcalc: B, n, bCuve: bCuveR, bCuveCalc, eauCuve, eauCalc, Vreel: seff > 0 ? bCuveR * n / seff : 0, prods, errs, warns, ok: !errs.length };
 }
 function qtyTxt(q, u) { return (u === "L" && q < 1) ? fmtN(q * 1000) + " mL" : (u === "kg" && q < 1) ? fmtN(q * 1000) + " g" : fmtN(q) + " " + u; }
 function calcHtml(c, compact) {
@@ -1450,15 +1475,15 @@ function calcHtml(c, compact) {
   h += '<div class="row" style="flex-wrap:wrap;gap:6px 14px;font-size:15px">' +
     "<div>Surface : <b>" + fmtN(c.surf) + " ha</b>" + (c.seff !== c.surf ? " → traitée <b>" + fmtN(c.seff) + " ha</b>" : "") + "</div>" +
     "<div>Bouillie : <b>" + fmtN(Math.round(c.B)) + " L</b></div></div>";
-  h += '<div style="font-size:24px;font-weight:800;margin:10px 0">' + c.n + " cuve" + (c.n > 1 ? "s" : "") + " de " + fmtN(Math.round(c.bCuve)) + " L</div>";
+  h += '<div style="font-size:24px;font-weight:800;margin:10px 0">' + c.n + " cuve" + (c.n > 1 ? "s" : "") + " de " + fmtN(c.eauCuve) + " L d'eau + produits</div>";
   h += '<table class="sh" style="font-size:15px"><thead><tr><th>Par cuve</th><th class="r">Quantité</th></tr></thead><tbody>';
   h += "<tr><td>💧 Eau</td><td class=\"r\"><b>" + fmtN(Math.round(c.eauCuve)) + " L</b></td></tr>";
   for (const p of c.prods) h += "<tr><td>" + esc(p.nom) + "</td><td class=\"r\"><b>" + qtyTxt(p.qcuve, p.unite) + "</b>" + (p.contenance ? "<br><small>≈ " + fmtN(p.qcuve / p.contenance) + " " + ctw(p, p.qcuve / p.contenance) + "</small>" : "") + "</td></tr>";
   h += "</tbody></table>";
   if (!compact) {
     h += '<details style="margin-top:10px"><summary>Détail du calcul et totaux</summary><div style="font-size:14px;margin-top:6px">';
-    for (const p of c.prods) h += "<div style=\"margin-top:6px\"><b>" + esc(p.nom) + "</b> : " + esc(p.how) + " · total <b>" + qtyTxt(p.qtot, p.unite) + "</b>" + (c.seff !== c.surf ? " (soit " + fmtD(p.qhaApplique) + " " + p.unite + " par ha de parcelle)" : "") + "</div>";
-    h += "<div style=\"margin-top:6px\">Volume : " + fmtN(c.V) + " L/ha × " + fmtN(c.seff) + " ha = " + fmtN(Math.round(c.B)) + " L, cuve de " + fmtN(c.cap) + " L → " + c.n + " cuve(s) égales.</div></div></details>";
+    for (const p of c.prods) h += "<div style=\"margin-top:6px\"><b>" + esc(p.nom) + "</b> : " + esc(p.how) + (p.qcuveCalc ? " · par cuve calculé " + fmtD(p.qcuveCalc) + " " + p.unite + " → arrondi <b>" + qtyTxt(p.qcuve, p.unite) + "</b>" + (p.arrBas ? " (vers le bas : dose maximale)" : "") + " · dose réelle " + fmtD(p.qha) + " " + p.unite + "/ha" : "") + " · total <b>" + qtyTxt(p.qtot, p.unite) + "</b>" + (c.seff !== c.surf ? " (soit " + fmtD(p.qhaApplique) + " " + p.unite + " par ha de parcelle)" : "") + "</div>";
+    h += "<div style=\"margin-top:6px\">Volume : " + fmtN(c.V) + " L/ha × " + fmtN(c.seff) + " ha = " + fmtN(Math.round(c.Bcalc != null ? c.Bcalc : c.B)) + " L, cuve de " + fmtN(c.cap) + " L → " + c.n + " cuve(s) égales." + (c.eauCalc != null ? " Eau par cuve calculée " + fmtN(Math.round(c.eauCalc)) + " L → arrondie <b>" + fmtN(c.eauCuve) + " L</b> (volume réel ≈ " + fmtN(Math.round(c.Vreel)) + " L/ha)." : "") + "</div></div></details>";
   }
   h += "</div>";
   if (c.warns.length) h += '<div class="note warn">' + c.warns.map(esc).join("<br>") + "</div>";
@@ -1882,8 +1907,8 @@ async function oSend() {
     entrepriseId: o.ent || "", entreprise: o.ent && S.entreprises[o.ent] ? { nom: S.entreprises[o.ent].nom, siret: S.entreprises[o.ent].siret } : null,
     horaires: !!o.horaires, bbch: (o.bbch || "").trim(), cible: (o.cible || "").trim(), mode: (o.mode || "").trim(), siretBenef: (o.sb || "").replace(/\s/g, ""),
     pulve: { id: o.pulve, nom: pv.nom, capacite: +pv.capacite },
-    produits: c.prods.map(p => ({ produitId: p.produitId, nom: p.nom, unite: p.unite, contenant: p.contenant, contenance: p.contenance, dose: p.dose, du: p.du, maxHa: p.maxHa, qha: p.qha, how: p.how, qtot: p.qtot, qcuve: p.qcuve })),
-    calc: { surf: c.surf, seff: c.seff, V: c.V, cap: c.cap, B: c.B, n: c.n, bCuve: c.bCuve, eauCuve: c.eauCuve, warns: c.warns }
+    produits: c.prods.map(p => ({ produitId: p.produitId, nom: p.nom, unite: p.unite, contenant: p.contenant, contenance: p.contenance, dose: p.dose, du: p.du, maxHa: p.maxHa, qha: p.qha, qhaCalc: p.qhaCalc, how: p.how, qtot: p.qtot, qcuve: p.qcuve, qcuveCalc: p.qcuveCalc })),
+    calc: { surf: c.surf, seff: c.seff, V: c.V, cap: c.cap, B: c.B, Bcalc: c.Bcalc, n: c.n, bCuve: c.bCuve, eauCuve: c.eauCuve, eauCalc: c.eauCalc, Vreel: c.Vreel, warns: c.warns }
   };
   if (c.warns.some(w => w.includes("dépasse")) && !await confirmBox("Dose maximale dépassée", c.warns.filter(w => w.includes("dépasse")).join(" "), "Envoyer quand même", true)) return;
   const res = await act("traitement_creer", { p_date: o.date, p_operateur_id: o.op || null, p_pulve_id: o.pulve, p_data: data, p_note: o.note }, "Ordre envoyé");
@@ -1912,7 +1937,7 @@ VIEWS.trtview = {
     h += '<div class="ob"><div class="ob-l">📍 Parcelles</div><div class="ob-v">' + (d.parcelles || []).map(p => { const pt = parcPoint(S.parcelles[p.id]); return esc(p.nom) + " <small>" + fmtN(p.surface) + " ha" + (p.taux && p.taux < 100 ? " utiles (" + fmtN(p.surfacePlan) + " ha × " + fmtN(p.taux) + " %)" : "") + "</small>" + (pt ? ' <a class="btn sm noprint" style="min-height:32px;padding:2px 10px;font-size:13px" href="' + goLink(pt) + '" target="_blank" rel="noopener">📍 Y aller</a>' : ""); }).join("<br>") +
       '<div style="margin-top:4px"><span class="badge ' + (d.r2 ? "low" : "in") + '" style="margin:0;font-size:14px">' + (d.r2 ? "UN RANG SUR DEUX" : "Tous les rangs") + "</span></div></div></div>";
     if ((d.parcelles || []).some(p => parcPoint(S.parcelles[p.id]))) h += '<div id="trt_map" class="mapbox noprint" style="height:260px;margin:10px 0"></div>';
-    h += '<div class="ob"><div class="ob-l">🪣 Nombre de cuves</div><div class="ob-v" style="font-size:30px;font-weight:800">' + c.n + " <small>cuve" + (c.n > 1 ? "s" : "") + " de " + fmtN(Math.round(c.bCuve)) + " L</small></div></div>";
+    h += '<div class="ob"><div class="ob-l">🪣 Nombre de cuves</div><div class="ob-v" style="font-size:30px;font-weight:800">' + c.n + " <small>cuve" + (c.n > 1 ? "s" : "") + " de " + fmtN(Math.round(c.eauCuve)) + " L d'eau + produits</small></div></div>";
     h += '<div class="ob-t">Dans <u>chaque</u> cuve :</div><table class="sh obt"><tbody>';
     h += '<tr><td>💧 Eau</td><td class="r">' + fmtN(Math.round(c.eauCuve)) + " L</td></tr>";
     for (const p of c.prods) h += "<tr><td>" + esc(p.nom) + (p.contenance ? '<br><small>≈ ' + fmtN(p.qcuve / p.contenance) + " " + ctw(p, p.qcuve / p.contenance) + " de " + fmtN(p.contenance) + " " + esc(p.unite) + "</small>" : "") + '</td><td class="r">' + qtyTxt(p.qcuve, p.unite) + "</td></tr>";
