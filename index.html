@@ -219,7 +219,13 @@ const canAdmin = () => !!(S.me && S.me.isAdmin);
 /* ===================== Données ===================== */
 function stocks() { const m = {}; for (const [id, p] of Object.entries(S.produits)) m[id] = +p.stock || 0; return m; }
 const U = p => (p && p.unite) || "L";
-const bidonsTxt = (p, q) => (p && +p.contenance > 0) ? "≈ " + fmtN(q / p.contenance) + " bidon" + (Math.abs(q / p.contenance) >= 2 ? "s" : "") + " de " + fmtN(p.contenance) + " " + U(p) : "";
+/* Contenant du produit : bidon, sac ou boîte */
+const CTN = { bidon: ["bidon", "bidons"], sac: ["sac", "sacs"], boite: ["boîte", "boîtes"] };
+const ctw = (p, n) => { const c = CTN[(p && p.contenant)] || CTN.bidon; return (n !== undefined && Math.abs(n) >= 2) ? c[1] : c[0]; };
+const ctP = p => (CTN[(p && p.contenant)] || CTN.bidon)[1];
+const cap = t => t.charAt(0).toUpperCase() + t.slice(1);
+const fem = p => p && p.contenant === "boite";  // « une boîte entamée / pleine »
+const bidonsTxt = (p, q) => (p && +p.contenance > 0) ? "≈ " + fmtN(q / p.contenance) + " " + ctw(p, q / p.contenance) + " de " + fmtN(p.contenance) + " " + U(p) : "";
 const activeProducts = () => Object.entries(S.produits).filter(([, p]) => p && p.actif !== false).sort((a, b) => norm(a[1].nom).localeCompare(norm(b[1].nom)));
 const byEan = code => { code = String(code).trim(); const e = Object.entries(S.produits).find(([, p]) => p && p.actif !== false && (p.eans || []).includes(code)); return e ? e[0] : null; };
 const openAlerts = () => Object.entries(S.alertes).filter(([, a]) => a && !a.resolu).sort((a, b) => String(b[1].createdAt).localeCompare(String(a[1].createdAt)));
@@ -274,6 +280,7 @@ const regUrgent = () => regIssues().filter(i => i.lvl >= 2).length;
 function applyState(st) {
   S.version = st.version; S.me = st.me; S.ephyMaj = st.ephyMaj || null; S.ephyInfo = st.ephyInfo || "";
   S.produits = st.produits || {}; S.mouvements = st.mouvements || {}; S.alertes = st.alertes || {}; S.users = st.users || {};
+  S.demandes = st.demandes || {};
 }
 async function reload() {
   const st = await api("get_state", { p_token: S.token });
@@ -378,8 +385,9 @@ async function confirmBox(title, text, ok = "Confirmer", danger = false) {
 }
 function topbar(title, back) {
   const who = S.me ? '<div class="who"><b>' + esc(S.me.prenom) + '</b><br>' + esc(ROLE[S.me.role] || "") + '</div>' : "";
-  return '<div class="top">' + (back ? '<button class="back" data-a="go" data-v="' + back + '" aria-label="Retour">←</button>' : "") +
-    '<div class="t">' + (back ? "" : "🌿 ") + esc(title) + '</div>' + who + "</div>" +
+  const home = (S.me && S.view !== "home" && back !== "home") ? '<button class="back" data-a="go" data-v="home" aria-label="Accueil" title="Accueil">🏠</button>' : "";
+  return '<div class="top">' + (back ? '<button class="back" data-a="go" data-v="' + back + '" aria-label="Retour">←</button>' : "") + (back ? "" : home) +
+    '<div class="t">' + (back || home ? "" : "🌿 ") + esc(title) + '</div>' + (back ? home : "") + who + "</div>" +
     '<div id="offline" class="note warn" ' + (S.offline ? "" : "hidden") + '>Hors connexion : les données affichées peuvent ne pas être à jour.</div>';
 }
 function go(view, f) { S.view = view; S.f = f || {}; render(); window.scrollTo(0, 0); }
@@ -401,7 +409,7 @@ function mvLabel(mv) {
 }
 function mvQty(mv) {
   const sign = mv.type === "sortie" ? "−" : mv.type === "entree" ? "+" : (mv.quantite >= 0 ? "+" : "−");
-  return sign + fmtN(Math.abs(mv.quantite)) + " " + esc(mv.unite) + (mv.nbBidons ? "<small>" + fmtN(mv.nbBidons) + " bidon(s)</small>" : "");
+  return sign + fmtN(Math.abs(mv.quantite)) + " " + esc(mv.unite) + (mv.nbBidons ? "<small>" + fmtN(mv.nbBidons) + " " + ctw(S.produits[mv.produitId], mv.nbBidons) + "</small>" : "");
 }
 
 /* ===================== Code-barre ===================== */
@@ -557,7 +565,7 @@ function keyPress(k) {
 VIEWS.home = {
   live: true,
   html() {
-    const al = openAlerts().length + (isDec() ? regUrgent() : 0), cmd = openOrders().length;
+    const al = openAlerts().length + (isDec() ? regUrgent() + Object.values(S.demandes || {}).filter(d => d.statut === "faite").length : 0), cmd = openOrders().length;
     let h = topbar("Stock phyto");
     h += '<p class="muted" style="margin:0 0 14px">Certiphyto : <b>' + esc(S.me.certiphyto || "non renseigné") + "</b></p>";
     if (isDec()) {
@@ -573,6 +581,10 @@ VIEWS.home = {
         '<button class="big" data-a="go" data-v="ephy"><span class="ic">📚</span>Données E-Phy</button>' +
         "</div>" + '<button class="big" style="margin-top:10px" data-a="go" data-v="print"><span class="ic">🖨️</span><span>Imprimer l\'état du stock<span class="sub">Stock, statuts E-Phy, personnes et n° Certiphyto</span></span></button>';
     } else {
+      for (const [id, d] of Object.entries(S.demandes || {}).filter(([, d]) => d.statut === "ouverte" && d.userId === S.me.id)) {
+        const nb = d.produits ? d.produits.length : activeProducts().length;
+        h += '<button class="big pri" data-a="goReq" data-id="' + esc(id) + '"><span class="ic">📝</span><span>Inventaire demandé<span class="sub">par ' + esc(d.creePar) + " · " + nb + " produit(s)" + (d.echeance ? " · avant le " + fmtDate(d.echeance) : "") + (store.get(INV_KEY + "." + id) ? " · commencé" : "") + "</span></span></button>";
+      }
       h += '<button class="big out" style="min-height:110px;font-size:22px" data-a="startPick" data-m="sortie"><span class="ic">📤</span><span>Sortie de produit<span class="sub">Je prends un produit</span></span></button>';
       h += '<div class="grid2"><button class="big" data-a="go" data-v="stock"><span class="ic">📦</span>Voir le stock</button>' +
         '<button class="big" data-a="go" data-v="mes"><span class="ic">🕘</span>Mes saisies</button></div>';
@@ -675,9 +687,9 @@ VIEWS.qty = {
     h += '<div class="card"><div style="font-size:21px;font-weight:700">' + esc(p.nom) + '</div><div class="muted">En stock : <b id="curst">' + fmtN(st) + " " + esc(u) + "</b> " + esc(bidonsTxt(p, st)) + "</div></div>";
     { const r = regStatus(p); if ((r.k === "soon" || r.k === "warn") && f.mode !== "entree") h += '<div class="note warn">Fin d\'utilisation autorisée le <b>' + fmtDate(r.date) + "</b> (dans " + r.days + " jours).</div>";
       if ((r.k === "soon" || r.k === "warn" || r.k === "ending" || r.k === "retire") && f.mode === "entree") h += '<div class="note warn">Attention : ce produit est en fin d\'autorisation' + (r.date ? " (utilisation jusqu'au " + fmtDate(r.date) + ")" : "") + ".</div>"; }
-    if (f.mode === "assoc") { const a = S.alertes[f.alertId] || {}; h += '<div class="note info">Signalé par <b>' + esc(a.prenom) + "</b> le " + fmtDate(a.date) + " : « " + esc(a.nomSaisi) + " », " + fmtN(a.quantite) + " " + esc(a.saisie === "bidons" ? "bidon(s)" : a.unite) + (a.note ? "<br>Note : " + esc(a.note) : "") + "</div>"; }
-    h += '<label class="f">Je compte en</label><div class="seg"><button data-a="unit" data-u="bidons" class="' + (f.unit === "bidons" ? "on" : "") + '">Bidons</button><button data-a="unit" data-u="vol" class="' + (f.unit === "vol" ? "on" : "") + '">' + (u === "kg" ? "Kilos" : "Litres") + "</button></div>";
-    if (f.unit === "bidons" && !(+p.contenance > 0)) h += '<label class="f">Contenance d\'un bidon (' + esc(u) + ')</label><input class="in" id="cont" inputmode="decimal" placeholder="ex. 5" value="' + esc(f.cont || "") + '">';
+    if (f.mode === "assoc") { const a = S.alertes[f.alertId] || {}; h += '<div class="note info">Signalé par <b>' + esc(a.prenom) + "</b> le " + fmtDate(a.date) + " : « " + esc(a.nomSaisi) + " », " + fmtN(a.quantite) + " " + esc(a.saisie === "bidons" ? (a.unite || "bidon") + "(s)" : a.unite) + (a.note ? "<br>Note : " + esc(a.note) : "") + "</div>"; }
+    h += '<label class="f">Je compte en</label><div class="seg"><button data-a="unit" data-u="bidons" class="' + (f.unit === "bidons" ? "on" : "") + '">' + cap(ctP(p)) + '</button><button data-a="unit" data-u="vol" class="' + (f.unit === "vol" ? "on" : "") + '">' + (u === "kg" ? "Kilos" : "Litres") + "</button></div>";
+    if (f.unit === "bidons" && !(+p.contenance > 0)) h += '<label class="f">Contenance ' + (fem(p) ? "d\'une " : "d\'un ") + ctw(p) + ' (' + esc(u) + ')</label><input class="in" id="cont" inputmode="decimal" placeholder="ex. 5" value="' + esc(f.cont || "") + '">';
     h += '<label class="f">' + (f.mode === "entree" ? "Quantité livrée" : "Quantité utilisée") + '</label><div class="stepper"><button data-a="step" data-d="-1">−</button><input id="n" inputmode="decimal" value="' + esc(f.n) + '" placeholder="0"><button data-a="step" data-d="1">+</button></div>';
     h += '<div class="calc" id="calc"></div><div id="warn"></div>';
     h += '<label class="f">' + (f.mode === "entree" ? "Date de livraison" : "Date d'utilisation") + '</label><input class="in" type="date" id="date" value="' + esc(f.date) + '" max="' + today() + '">';
@@ -701,7 +713,7 @@ function qtyCalc() {
   const cont = +p.contenance > 0 ? +p.contenance : parseN(f.cont);
   if (!(n > 0)) return { ok: false, msg: "" };
   if (f.unit === "bidons") {
-    if (!(cont > 0)) return { ok: false, msg: "Indiquez la contenance d'un bidon." };
+    if (!(cont > 0)) return { ok: false, msg: "Indiquez la contenance " + (fem(p) ? "d'une " : "d'un ") + ctw(p) + "." };
     return { ok: true, q: n * cont, nb: n, cont };
   }
   return { ok: true, q: n, nb: null, cont };
@@ -710,7 +722,7 @@ function updQty() {
   const f = S.f, p = S.produits[f.pid], el = $("#calc"); if (!el || !p) return;
   const st = stocks()[f.pid] || 0; const cs = $("#curst"); if (cs) cs.textContent = fmtN(st) + " " + U(p);
   const r = qtyCalc();
-  el.innerHTML = r && r.ok ? (f.unit === "bidons" ? "= <b>" + fmtN(r.q) + " " + esc(U(p)) + "</b>" : (r.cont > 0 ? "≈ " + fmtN(r.q / r.cont) + " bidon(s)" : "")) : esc(r ? r.msg : "");
+  el.innerHTML = r && r.ok ? (f.unit === "bidons" ? "= <b>" + fmtN(r.q) + " " + esc(U(p)) + "</b>" : (r.cont > 0 ? "≈ " + fmtN(r.q / r.cont) + " " + ctw(p, r.q / r.cont) : "")) : esc(r ? r.msg : "");
   let w = "";
   if (r && r.ok && f.mode !== "entree" && r.q > st + 1e-9) w = '<div class="note warn">Attention : c\'est plus que le stock enregistré (' + fmtN(st) + " " + esc(U(p)) + "). Vous pouvez valider, les décideurs seront prévenus.</div>";
   $("#warn").innerHTML = w;
@@ -730,7 +742,7 @@ async function saveQty() {
     p_alerte_id: f.mode === "assoc" ? f.alertId : null
   });
   if (!res) { if ($("#ok")) updQty(); return; }
-  const what = (r.nb ? fmtN(r.nb) + " bidon(s) — " : "") + fmtN(r.q) + " " + U(p) + " de " + p.nom;
+  const what = (r.nb ? fmtN(r.nb) + " " + ctw(p, r.nb) + " — " : "") + fmtN(r.q) + " " + U(p) + " de " + p.nom;
   if (f.mode === "assoc") { toast("Régularisé : " + what); go("alertes"); }
   else go("done", { mode: f.mode, txt: (type === "entree" ? "Entrée enregistrée" : "Sortie enregistrée"), what });
 }
@@ -750,10 +762,10 @@ VIEWS.inconnu = {
     const f = S.f;
     let h = topbar("Produit hors liste", "home") + "<h1>Signaler un produit</h1>";
     h += '<p class="muted">Les décideurs seront prévenus d\'une erreur dans le stock et régulariseront.</p>';
-    h += '<label class="f">Nom du produit</label><input class="in" id="nm" value="' + esc(f.nom || "") + '" placeholder="Tel qu\'écrit sur le bidon">';
+    h += '<label class="f">Nom du produit</label><input class="in" id="nm" value="' + esc(f.nom || "") + '" placeholder="Tel qu\'écrit sur l\'emballage">';
     if (f.ean) h += '<p class="muted" style="font-size:13px">Code-barre scanné : ' + esc(f.ean) + "</p>";
     h += '<label class="f">Quantité utilisée</label><div class="row"><input class="in" id="qt" inputmode="decimal" placeholder="0">' +
-      '<select class="in" id="un"><option value="bidons">bidon(s)</option><option value="L">litre(s)</option><option value="kg">kilo(s)</option></select></div>';
+      '<select class="in" id="un"><option value="bidon">bidon(s)</option><option value="sac">sac(s)</option><option value="boîte">boîte(s)</option><option value="L">litre(s)</option><option value="kg">kilo(s)</option></select></div>';
     h += '<label class="f">Date d\'utilisation</label><input class="in" type="date" id="dt" value="' + esc(f.date || today()) + '" max="' + today() + '">';
     h += '<label class="f">Remarque <small>(facultatif)</small></label><input class="in" id="nt" placeholder="ex. bidon de 5 L, étiquette abîmée">';
     h += '<div style="margin-top:20px"><button class="btn pri full" data-a="sendUnknown">Envoyer le signalement</button></div>';
@@ -765,8 +777,8 @@ async function sendUnknown() {
   if (!nom) return toast("Indiquez le nom du produit.", "err");
   if (!(q > 0)) return toast("Indiquez la quantité.", "err");
   if (!dt) return toast("Indiquez la date.", "err");
-  const ok = await act("signal_inconnu", { p_nom: nom, p_quantite: q, p_unite: un === "bidons" ? "" : un, p_saisie: un === "bidons" ? "bidons" : "volume", p_ean: S.f.ean || "", p_note: nt, p_date: dt });
-  if (ok) go("done", { mode: "sortie", txt: "Signalement envoyé", what: nom + " — " + fmtN(q) + " " + (un === "bidons" ? "bidon(s)" : un) + ". Les décideurs sont prévenus." });
+  const ok = await act("signal_inconnu", { p_nom: nom, p_quantite: q, p_unite: un, p_saisie: ["bidon", "sac", "boîte"].includes(un) ? "bidons" : "volume", p_ean: S.f.ean || "", p_note: nt, p_date: dt });
+  if (ok) go("done", { mode: "sortie", txt: "Signalement envoyé", what: nom + " — " + fmtN(q) + " " + (["bidon", "sac", "boîte"].includes(un) ? un + "(s)" : un) + ". Les décideurs sont prévenus." });
 }
 
 /* ---------- Nouveau produit / fiche produit ---------- */
@@ -774,7 +786,8 @@ function productForm(p) {
   const u = p.unite || "L";
   return '<label class="f">Nom du produit</label><input class="in" id="p_nom" value="' + esc(p.nom || "") + '" placeholder="Nom commercial">' +
     '<label class="f">Unité</label><div class="seg" id="p_un"><button data-a="punit" data-u="L" class="' + (u === "L" ? "on" : "") + '">Litres</button><button data-a="punit" data-u="kg" class="' + (u === "kg" ? "on" : "") + '">Kilos</button></div>' +
-    '<label class="f">Contenance d\'un bidon <small>(en L ou kg)</small></label><input class="in" id="p_cont" inputmode="decimal" value="' + esc(p.contenance ?? "") + '" placeholder="ex. 5">' +
+    '<label class="f">Contenant</label><div class="seg" id="p_ct">' + [["bidon", "Bidon"], ["sac", "Sac"], ["boite", "Boîte"]].map(([k, l]) => '<button data-a="punit" data-u="' + k + '" class="' + ((p.contenant || "bidon") === k ? "on" : "") + '">' + l + "</button>").join("") + "</div>" +
+    '<label class="f">Contenance d\'un contenant <small>(en L ou kg)</small></label><input class="in" id="p_cont" inputmode="decimal" value="' + esc(p.contenance ?? "") + '" placeholder="ex. 5">' +
     '<label class="f">Code(s)-barre <small>(séparés par des virgules)</small></label><div class="row" style="gap:8px"><input class="in" id="p_ean" inputmode="numeric" value="' + esc((p.eans || []).join(", ")) + '"><button class="btn" style="flex:none;min-height:52px;font-size:22px" data-a="scanEan">📷</button></div>' +
     '<label class="f">N° AMM <small>(pour les alertes de fin d\'utilisation)</small></label><div class="row" style="gap:8px"><input class="in" id="p_amm" inputmode="numeric" value="' + esc(p.amm || "") + '"><button class="btn" style="flex:none;min-height:52px" data-a="ephySearch">🔍 E-Phy</button></div>' +
     '<div id="p_ephy" class="muted" style="font-size:14px;margin-top:6px">' + ephyLine(p.ephy, p.amm) + "</div>" +
@@ -823,7 +836,7 @@ function readProductForm() {
   const on = $("#p_un .on");
   const cont = parseN($("#p_cont").value), seuil = parseN($("#p_seuil").value);
   return {
-    p_nom: $("#p_nom").value.trim(), p_unite: on ? on.dataset.u : "L",
+    p_nom: $("#p_nom").value.trim(), p_unite: on ? on.dataset.u : "L", p_contenant: ($("#p_ct .on") || { dataset: { u: "bidon" } }).dataset.u,
     p_contenance: cont > 0 ? cont : null, p_seuil: seuil > 0 ? seuil : null,
     p_eans: [...new Set($("#p_ean").value.split(/[,;\s]+/).map(s => s.trim()).filter(Boolean))],
     p_amm: $("#p_amm").value.trim()
@@ -1112,13 +1125,15 @@ async function ephyImport(fileOrBlob) {
 const INV_KEY = "phyto.inv";
 const PCTS = [10, 20, 30, 40, 50, 60, 70, 80, 90];
 /* Un comptage : { mode: "bidons" | "direct", full: n, open: [pourcentages], direct: "texte", done: bool } */
+const invKey = () => S.f.req ? INV_KEY + "." + S.f.req : INV_KEY;
 function invState() {
   if (S.f.only) { if (!S.f.items) S.f.items = {}; return S.f.items; }
-  if (!S.inv) { const d = store.get(INV_KEY); S.inv = (d && d.items) ? d : { started: nowIsoLocal(), items: {} }; }
+  if (!S.inv || S.invKey !== invKey()) { const d = store.get(invKey()); S.inv = (d && d.items) ? d : { started: today(), items: {} }; S.invKey = invKey(); }
   return S.inv.items;
 }
-const nowIsoLocal = () => today();
-function invPersist() { if (!S.f.only && S.inv) store.set(INV_KEY, S.inv); }
+function invPersist() { if (!S.f.only && S.inv) store.set(S.invKey, S.inv); }
+const myReq = id => { const d = S.demandes && S.demandes[id]; return d && d.statut === "ouverte" && S.me && d.userId === S.me.id ? d : null; };
+const blind = () => !isDec();   // les opérateurs comptent sans voir le stock théorique
 function invItem(pid) {
   const items = invState(), p = S.produits[pid];
   if (!items[pid]) items[pid] = { mode: +p.contenance > 0 ? "bidons" : "direct", full: 0, open: [], direct: "", done: false };
@@ -1137,9 +1152,10 @@ function invCalc(pid) {
   if (!(c > 0)) return null;
   const q = Math.round(((it.full || 0) * c + (it.open || []).reduce((s, x) => s + x, 0) / 100 * c) * 1000) / 1000;
   const parts = [];
-  if (it.full) parts.push(it.full + " bidon" + (it.full > 1 ? "s" : "") + " plein" + (it.full > 1 ? "s" : ""));
-  if (it.open.length) parts.push(it.open.length + " entamé" + (it.open.length > 1 ? "s" : "") + " (" + it.open.map(x => x + " %").join(", ") + ")");
-  const detail = (parts.length ? parts.join(" + ") : "aucun bidon") + " de " + fmtN(c) + " " + u + " ≈ " + fmtN(q) + " " + u;
+  const e = fem(p) ? "e" : "";
+  if (it.full) parts.push(it.full + " " + ctw(p, it.full) + " plein" + e + (it.full > 1 ? "s" : ""));
+  if (it.open.length) parts.push(it.open.length + " entamé" + e + (it.open.length > 1 ? "s" : "") + " (" + it.open.map(x => x + " %").join(", ") + ")");
+  const detail = (parts.length ? parts.join(" + ") : "aucun" + e + " " + ctw(p)) + " de " + fmtN(c) + " " + u + " ≈ " + fmtN(q) + " " + u;
   return { q, detail };
 }
 function invCard(pid) {
@@ -1147,24 +1163,25 @@ function invCard(pid) {
   const it = invItem(pid), st = +p.stock || 0, u = U(p), c = +p.contenance, r = invCalc(pid);
   let h = '<div class="card" id="inv_' + esc(pid) + '" style="' + (it.done ? "border-left:5px solid var(--acc)" : "") + '">';
   h += '<div class="row" style="align-items:flex-start"><div><div style="font-weight:700;font-size:18px">' + esc(p.nom) + "</div>" +
-    '<div class="muted" style="font-size:14px">Stock théorique : <b>' + fmtN(st) + " " + esc(u) + "</b>" + (c > 0 ? " · bidon de " + fmtN(c) + " " + esc(u) : "") +
+    '<div class="muted" style="font-size:14px">' + (blind() ? "" : "Stock théorique : <b>" + fmtN(st) + " " + esc(u) + "</b> · ") + (c > 0 ? ctw(p) + " de " + fmtN(c) + " " + esc(u) : "") +
     (p.invLe ? "<br>Dernier inventaire : " + fmtDate(p.invLe) : "") + "</div></div>" +
     (it.done ? '<button class="btn sm ghost" style="flex:none" data-a="invUndo" data-id="' + esc(pid) + '">Annuler</button>' : "") + "</div>";
-  if (c > 0) h += '<div class="seg" style="margin-top:10px"><button data-a="invMode" data-id="' + esc(pid) + '" data-m="bidons" class="' + (it.mode === "bidons" ? "on" : "") + '">Bidons</button><button data-a="invMode" data-id="' + esc(pid) + '" data-m="direct" class="' + (it.mode === "direct" ? "on" : "") + '">' + (u === "kg" ? "Kilos" : "Litres") + "</button></div>";
+  if (c > 0) h += '<div class="seg" style="margin-top:10px"><button data-a="invMode" data-id="' + esc(pid) + '" data-m="bidons" class="' + (it.mode === "bidons" ? "on" : "") + '">' + cap(ctP(p)) + '</button><button data-a="invMode" data-id="' + esc(pid) + '" data-m="direct" class="' + (it.mode === "direct" ? "on" : "") + '">' + (u === "kg" ? "Kilos" : "Litres") + "</button></div>";
   if (it.mode === "bidons" && c > 0) {
-    h += '<div class="row" style="margin-top:12px;align-items:center"><b>Bidons pleins</b><div class="stepper" style="flex:none;gap:6px">' +
+    h += '<div class="row" style="margin-top:12px;align-items:center"><b>' + cap(ctP(p)) + (fem(p) ? " pleines" : " pleins") + '</b><div class="stepper" style="flex:none;gap:6px">' +
       '<button style="width:52px;min-height:52px;font-size:26px" data-a="invFull" data-id="' + esc(pid) + '" data-d="-1">−</button>' +
       '<input style="width:70px;min-height:52px;font-size:24px" readonly value="' + (it.full || 0) + '">' +
       '<button style="width:52px;min-height:52px;font-size:26px" data-a="invFull" data-id="' + esc(pid) + '" data-d="1">+</button></div></div>';
-    h += '<div style="margin-top:12px"><b>Bidons entamés</b> <small class="muted">(niveau estimé à l\'œil)</small></div><div class="chips" style="margin:8px 0">' +
+    h += '<div style="margin-top:12px"><b>' + cap(ctP(p)) + (fem(p) ? " entamées" : " entamés") + '</b> <small class="muted">(niveau estimé à l\'œil)</small></div><div class="chips" style="margin:8px 0">' +
       it.open.map((x, i) => '<button class="chip" data-a="invDelOpen" data-id="' + esc(pid) + '" data-i="' + i + '">' + x + " % ≈ " + fmtN(x / 100 * c) + " " + esc(u) + " ✕</button>").join("") +
-      '<button class="chip on" data-a="invAddOpen" data-id="' + esc(pid) + '">+ Bidon entamé</button></div>';
+      '<button class="chip on" data-a="invAddOpen" data-id="' + esc(pid) + '">+ ' + cap(ctw(p)) + (fem(p) ? " entamée" : " entamé") + '</button></div>';
   } else {
-    if (!(c > 0)) h += '<p class="muted" style="font-size:13px;margin:8px 0 0">Contenance du bidon inconnue : saisissez la quantité totale (ou renseignez la contenance dans la fiche produit).</p>';
+    if (!(c > 0)) h += '<p class="muted" style="font-size:13px;margin:8px 0 0">Contenance du contenant inconnue : saisissez la quantité totale' + (blind() ? "." : " (ou renseignez la contenance dans la fiche produit).") + "</p>";
     h += '<div class="row" style="margin-top:10px"><input class="in" inputmode="decimal" placeholder="Quantité totale (' + esc(u) + ')" data-invdirect="' + esc(pid) + '" value="' + esc(it.direct) + '"></div>';
   }
   if (!it.done) h += '<div style="margin-top:10px"><button class="btn sm" data-a="invZero" data-id="' + esc(pid) + '">Aucun en stock (0)</button></div>';
-  if (r) {
+  if (r && blind()) h += '<div class="note ok" style="margin:10px 0 0">Compté ≈ <b>' + fmtN(r.q) + " " + esc(u) + "</b></div>";
+  else if (r) {
     const d = Math.round((r.q - st) * 1000) / 1000;
     h += '<div class="note ' + (Math.abs(d) < 1e-9 ? "ok" : "info") + '" style="margin:10px 0 0">Compté ≈ <b>' + fmtN(r.q) + " " + esc(u) + "</b> · " +
       (Math.abs(d) < 1e-9 ? "conforme" : "écart <b>" + (d > 0 ? "+" : "") + fmtN(d) + " " + esc(u) + "</b>") + "</div>";
@@ -1181,13 +1198,14 @@ function invFooter() {
   const el = $("#inv_foot"); if (!el) return;
   const n = invCounted().length;
   const ic = $("#inv_count"); if (ic) ic.textContent = n + " / " + activeProducts().length;
-  el.innerHTML = '<button class="btn pri full" data-a="invValidate" ' + (n ? "" : "disabled") + ">Valider " + (S.f.only ? "le comptage" : "l'inventaire (" + n + " produit" + (n > 1 ? "s" : "") + ")") + "</button>";
+  el.innerHTML = '<button class="btn pri full" data-a="invValidate" ' + (n ? "" : "disabled") + ">" + (S.f.req ? "Envoyer le comptage (" : "Valider " + (S.f.only ? "le comptage" : "l'inventaire (")) + (S.f.only ? "" : n + " produit" + (n > 1 ? "s" : "") + ")") + "</button>";
 }
 function invList() {
   const el = $("#inv_list"); if (!el) return;
   const q = norm(S.f.q);
   let ps = S.f.only ? [[S.f.only, S.produits[S.f.only]]].filter(x => x[1]) : activeProducts();
-  if (q) ps = ps.filter(([, p]) => norm(p.nom).includes(q));
+  if (S.f.req) { const d = S.demandes[S.f.req]; if (d && d.produits) ps = ps.filter(([id]) => d.produits.includes(id)); }
+  if (q) ps = ps.filter(([, p]) => norm(p.nom).includes(q) || (p.eans || []).some(e => e.includes(q)));
   if (S.f.flt === "todo") ps = ps.filter(([id]) => !(invState()[id] && invState()[id].done));
   el.innerHTML = ps.length ? ps.map(([id]) => invCard(id)).join("") : '<div class="note info">Aucun produit.</div>';
   invFooter();
@@ -1195,16 +1213,26 @@ function invList() {
 VIEWS.inv = {
   live() { if (document.activeElement && document.activeElement.dataset && document.activeElement.dataset.invdirect) return; invList(); },
   html() {
-    if (!isDec()) return topbar("Inventaire", "home") + '<div class="note bad">Réservé aux décideurs.</div>';
+    if (S.f.req && !myReq(S.f.req)) return topbar("Inventaire", "home") + '<div class="note info">Cette demande d\'inventaire n\'est plus ouverte.</div>';
+    if (!isDec() && !S.f.req) return topbar("Inventaire", "home") + '<div class="note bad">Réservé aux décideurs.</div>';
     const back = S.f.only ? "produit:" + S.f.only : "home";
     let h = topbar("Inventaire", back);
     if (S.f.only) h += "<h1>Compter ce produit</h1>";
+    else if (S.f.req) {
+      const d = S.demandes[S.f.req], nb = d.produits ? d.produits.length : activeProducts().length;
+      h += "<h1>Inventaire demandé</h1><div class=\"note info\">Demandé par <b>" + esc(d.creePar) + "</b> le " + fmtDate(String(d.createdAt).slice(0, 10)) + " · " + nb + " produit(s)" + (d.echeance ? " · à faire avant le <b>" + fmtDate(d.echeance) + "</b>" : "") + (d.note ? "<br>« " + esc(d.note) + " »" : "") + "</div>" +
+        "<p class=\"muted\">Pour chaque produit, comptez les contenants pleins (bidons, sacs, boîtes) et estimez le niveau des contenants entamés. Vous pouvez vous interrompre et reprendre plus tard sur cet appareil.</p>" +
+        '<p class="muted" style="font-size:14px"><b id="inv_count">' + invCounted().length + " / " + nb + "</b> produits comptés.</p>" +
+        invSearchBar() +
+        '<div class="chips">' + [["all", "Tous"], ["todo", "Pas encore comptés"]].map(([k, l]) => '<button class="chip ' + ((S.f.flt || "all") === k ? "on" : "") + '" data-a="invFlt" data-k="' + k + '">' + l + "</button>").join("") + "</div>";
+    }
     else {
+      h += '<button class="btn full" style="margin-bottom:10px" data-a="go" data-v="invreq">📤 Demander un inventaire à un opérateur</button>';
       const items = invState(), started = Object.values(items).some(i => i.done);
       const total = activeProducts().length, done = invCounted().length;
-      h += "<h1>Inventaire</h1><p class=\"muted\">Comptez les bidons pleins et, pour chaque bidon entamé, estimez son niveau à l'œil. L'appli calcule la quantité et corrige le stock à la validation. Les produits non comptés ne sont pas modifiés.</p>";
+      h += "<h1>Inventaire</h1><p class=\"muted\">Comptez les contenants pleins (bidons, sacs, boîtes) et, pour chaque contenant entamé, estimez son niveau à l'œil. L'appli calcule la quantité et corrige le stock à la validation. Les produits non comptés ne sont pas modifiés.</p>";
       if (started) h += '<div class="note info">Inventaire en cours depuis le ' + fmtDate(S.inv.started) + " : <b id=\"inv_count\">" + done + " / " + total + "</b> produits comptés. Vous pouvez fermer l'appli et reprendre plus tard sur cet appareil. <button class=\"link\" data-a=\"invRestart\">Tout recommencer</button></div>";
-      h += '<div class="search"><span class="mag">🔍</span><input class="in" id="inv_q" placeholder="Rechercher un produit" value="' + esc(S.f.q || "") + '"></div>';
+      h += invSearchBar();
       h += '<div class="chips">' + [["all", "Tous"], ["todo", "Pas encore comptés"]].map(([k, l]) => '<button class="chip ' + ((S.f.flt || "all") === k ? "on" : "") + '" data-a="invFlt" data-k="' + k + '">' + l + "</button>").join("") + "</div>";
     }
     h += '<div id="inv_list"></div><div id="inv_foot" style="position:sticky;bottom:10px;margin-top:14px"></div>';
@@ -1212,7 +1240,12 @@ VIEWS.inv = {
   },
   after() {
     invList();
-    const q = $("#inv_q"); if (q) q.addEventListener("input", () => { S.f.q = q.value; invList(); });
+    const q = $("#inv_q");
+    if (q) {
+      q.addEventListener("input", () => { if (isCode(q.value)) return; S.f.q = q.value; invList(); });
+      q.addEventListener("keydown", e => { if (e.key !== "Enter") return; e.preventDefault(); const v = q.value.trim(); if (isCode(v)) { q.value = ""; S.f.q = ""; invGotCode(v); } });
+    }
+    const pl = $("#inv_plus"); if (pl) pl.addEventListener("change", () => { S.f.plus = pl.checked; });
     $("#inv_list").addEventListener("input", e => {
       const pid = e.target.dataset && e.target.dataset.invdirect; if (!pid) return;
       const it = invItem(pid); it.direct = e.target.value; it.done = e.target.value.trim() !== "";
@@ -1226,9 +1259,32 @@ VIEWS.inv = {
     });
   }
 };
+function invSearchBar() {
+  return '<div class="row" style="gap:8px"><div class="search"><span class="mag">🔍</span><input class="in" id="inv_q" placeholder="Nom ou code-barre" autocomplete="off" value="' + esc(S.f.q || "") + '"></div>' +
+    '<button class="btn pri" style="flex:none;min-height:52px;font-size:22px" data-a="invScan" aria-label="Scanner">📷</button></div>' +
+    '<label class="tog" style="padding:8px 2px"><span style="font-size:15px">Chaque scan ajoute <b>1 contenant plein</b><br><small class="muted">pratique pour scanner chaque bidon, sac ou boîte un par un</small></span><input type="checkbox" id="inv_plus" ' + (S.f.plus ? "checked" : "") + "></label>" +
+    '<p class="muted" style="font-size:13px;margin:0 2px 8px">📷 = scanner avec le téléphone · avec une douchette, scannez dans le champ de recherche</p>';
+}
+function invGotCode(code) {
+  const pid = byEan(code);
+  if (!pid) return toast("Code-barre " + code + " inconnu : cherchez le produit par son nom.", "err", 5000);
+  const p = S.produits[pid];
+  if (S.f.req) { const d = S.demandes[S.f.req]; if (d && d.produits && !d.produits.includes(pid)) return toast("« " + p.nom + " » ne fait pas partie de cet inventaire.", "err", 4000); }
+  if (S.f.q || S.f.flt === "todo") { S.f.q = ""; S.f.flt = "all"; const q = $("#inv_q"); if (q) q.value = ""; document.querySelectorAll("[data-a=invFlt]").forEach(b => b.classList.toggle("on", b.dataset.k === "all")); invList(); }
+  const it = invItem(pid);
+  if (S.f.plus) {
+    if (it.mode === "bidons" && +p.contenance > 0) { it.full = (it.full || 0) + 1; it.done = true; invRefresh(pid); toast(p.nom + " : " + it.full + " " + ctw(p, it.full) + (fem(p) ? " pleine" : " plein") + (it.full > 1 ? "s" : "")); }
+    else toast(p.nom + " : saisissez la quantité (contenance inconnue).", "err", 4000);
+  } else toast(p.nom);
+  const card = document.getElementById("inv_" + pid);
+  if (card) {
+    card.scrollIntoView({ behavior: "smooth", block: "center" });
+    card.style.outline = "3px solid var(--acc)"; setTimeout(() => { const c = document.getElementById("inv_" + pid); if (c) c.style.outline = ""; }, 1800);
+  }
+}
 async function invPickPct(pid) {
   const p = S.produits[pid], c = +p.contenance, u = U(p);
-  const r = await modal('<h3>Bidon entamé</h3><p class="muted">' + esc(p.nom) + " — niveau estimé du bidon de " + fmtN(c) + " " + esc(u) + "</p>" +
+  const r = await modal('<h3>' + cap(ctw(p)) + (fem(p) ? " entamée" : " entamé") + '</h3><p class="muted">' + esc(p.nom) + " — niveau estimé " + (fem(p) ? "de la " : "du ") + ctw(p) + " de " + fmtN(c) + " " + esc(u) + "</p>" +
     '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px">' + PCTS.map(x =>
       '<button class="btn" style="flex-direction:column;min-height:70px;gap:2px" data-m="' + x + '"><span style="display:block;width:28px;height:30px;border:2px solid var(--ink);border-radius:4px;position:relative;overflow:hidden"><span style="position:absolute;left:0;right:0;bottom:0;height:' + x + '%;background:var(--acc)"></span></span><span>' + x + " %</span><small class=\"muted\">≈ " + fmtN(x / 100 * c) + " " + esc(u) + "</small></button>").join("") +
     '</div><div class="acts"><button class="btn" data-m="cancel">Annuler</button></div>');
@@ -1239,15 +1295,61 @@ async function invValidate() {
   const pids = invCounted(); if (!pids.length) return;
   const rows = pids.map(pid => { const p = S.produits[pid], r = invCalc(pid), d = Math.round((r.q - (+p.stock || 0)) * 1000) / 1000; return { pid, p, r, d }; });
   const ecarts = rows.filter(x => Math.abs(x.d) > 1e-9);
-  const list = rows.map(x => '<div style="padding:6px 0;border-bottom:1px solid var(--line);font-size:14px"><b>' + esc(x.p.nom) + "</b><br>" + fmtN(+x.p.stock || 0) + " → " + fmtN(x.r.q) + " " + esc(U(x.p)) + (Math.abs(x.d) > 1e-9 ? " (<b>" + (x.d > 0 ? "+" : "") + fmtN(x.d) + "</b>)" : " ✓") + "</div>").join("");
-  const ok = await modal("<h3>Valider l'inventaire ?</h3><p class=\"muted\">" + rows.length + " produit(s) compté(s), " + ecarts.length + " correction(s) de stock.</p>" +
+  const list = rows.map(x => '<div style="padding:6px 0;border-bottom:1px solid var(--line);font-size:14px"><b>' + esc(x.p.nom) + "</b><br>" + (blind() ? "Compté : " + fmtN(x.r.q) + " " + esc(U(x.p)) : fmtN(+x.p.stock || 0) + " → " + fmtN(x.r.q) + " " + esc(U(x.p)) + (Math.abs(x.d) > 1e-9 ? " (<b>" + (x.d > 0 ? "+" : "") + fmtN(x.d) + "</b>)" : " ✓")) + "</div>").join("");
+  const ok = await modal("<h3>" + (S.f.req ? "Envoyer le comptage ?" : "Valider l'inventaire ?") + "</h3><p class=\"muted\">" + rows.length + " produit(s) compté(s)" + (blind() ? "." : ", " + ecarts.length + " correction(s) de stock.") + "</p>" +
     '<div style="max-height:45vh;overflow:auto">' + list + '</div><div class="acts"><button class="btn" data-m="cancel">Revenir</button><button class="btn pri" data-m="ok">Valider</button></div>');
   if (!ok) return;
-  const res = await act("inventaire_lot", { p_items: rows.map(x => ({ produit_id: x.pid, reel: x.r.q, detail: x.r.detail })) });
+  const res = await act("inventaire_lot", { p_items: rows.map(x => ({ produit_id: x.pid, reel: x.r.q, detail: x.r.detail })), p_demande_id: S.f.req || null });
   if (!res) return;
+  if (S.f.req) {
+    store.del(S.invKey); S.inv = null;
+    return go("done", { txt: "Comptage envoyé", what: rows.length + " produit(s) compté(s). Le stock a été mis à jour et " + (S.demandes[S.f.req] ? S.demandes[S.f.req].creePar : "le décideur") + " est prévenu. Merci !" });
+  }
   if (S.f.only) { toast(ecarts.length ? "Stock corrigé" : "Stock conforme, date d'inventaire notée"); return go("produit", { pid: S.f.only }); }
   S.inv = null; store.del(INV_KEY);
   go("done", { txt: "Inventaire enregistré", what: rows.length + " produit(s) compté(s), " + ecarts.length + " stock(s) corrigé(s). Les écarts apparaissent dans l'historique (type « Inventaire »)." });
+}
+
+/* ---------- Demande d'inventaire à un opérateur ---------- */
+VIEWS.invreq = {
+  live: true,
+  html() {
+    if (!isDec()) return topbar("Demande", "home") + '<div class="note bad">Réservé aux décideurs.</div>';
+    const f = S.f;
+    if (!f.sel) f.sel = {};
+    const ops = Object.entries(S.users).filter(([id, u]) => u && u.actif !== false && u.role === "applicateur").sort((a, b) => norm(a[1].prenom).localeCompare(norm(b[1].prenom)));
+    let h = topbar("Demande d'inventaire", "inv") + "<h1>Demander un inventaire</h1>";
+    h += '<p class="muted">L\'opérateur verra la demande sur son accueil. Il comptera sans voir le stock théorique ; le stock sera corrigé dès qu\'il envoie son comptage, et vous serez prévenu dans les Alertes.</p>';
+    if (!ops.length) return h + '<div class="note info">Aucun opérateur (applicateur) actif.</div>';
+    h += '<label class="f">Opérateur</label><div class="grid2">' + ops.map(([id, u]) => '<button class="big" style="min-height:64px' + (f.uid === id ? ";outline:3px solid var(--acc)" : "") + '" data-a="rqUser" data-id="' + esc(id) + '">' + esc(u.prenom) + (Object.values(S.demandes).some(d => d.userId === id && d.statut === "ouverte") ? '<span class="sub">demande en cours</span>' : "") + "</button>").join("") + "</div>";
+    h += '<label class="f">Produits à compter</label><div class="seg"><button data-a="rqScope" data-k="all" class="' + (f.scope !== "sel" ? "on" : "") + '">Tous (' + activeProducts().length + ')</button><button data-a="rqScope" data-k="sel" class="' + (f.scope === "sel" ? "on" : "") + '">Une sélection</button></div>';
+    if (f.scope === "sel") {
+      const n = Object.values(f.sel).filter(Boolean).length;
+      h += '<div class="row" style="margin-top:8px"><span class="muted">' + n + ' sélectionné(s)</span><button class="btn sm" style="flex:none" data-a="rqAll">Tout cocher</button><button class="btn sm" style="flex:none" data-a="rqNone">Tout décocher</button></div>';
+      h += '<div class="list" style="margin-top:8px">' + activeProducts().map(([id, p]) => '<label class="it" style="cursor:pointer"><input type="checkbox" data-rqp="' + esc(id) + '" ' + (f.sel[id] ? "checked" : "") + ' style="width:24px;height:24px;accent-color:var(--acc)"><div class="main"><div class="nm" style="font-size:16px">' + esc(p.nom) + '</div><div class="meta">' + (p.invLe ? "Dernier inventaire : " + fmtDate(p.invLe) : "Jamais inventorié") + "</div></div></label>").join("") + "</div>";
+    }
+    h += '<label class="f">À faire avant le <small>(facultatif)</small></label><input class="in" type="date" id="rq_ech" min="' + today() + '" value="' + esc(f.ech || "") + '">';
+    h += '<label class="f">Message <small>(facultatif)</small></label><input class="in" id="rq_note" placeholder="ex. local phyto du bas uniquement" value="' + esc(f.note || "") + '">';
+    h += '<div style="margin-top:18px"><button class="btn pri full" data-a="rqSend">📤 Envoyer la demande</button></div>';
+    const open = Object.entries(S.demandes).filter(([, d]) => d.statut === "ouverte");
+    if (open.length) h += "<h2>Demandes en cours</h2><div class=\"list\">" + open.map(([id, d]) => '<div class="it static"><div class="main"><div class="nm" style="font-size:16px">' + esc(d.prenom) + '</div><div class="meta">Envoyée le ' + fmtDate(String(d.createdAt).slice(0, 10)) + " par " + esc(d.creePar) + " · " + (d.produits ? d.produits.length + " produit(s)" : "tous les produits") + (d.echeance ? " · avant le " + fmtDate(d.echeance) : "") + '</div></div><button class="btn sm" data-a="rqCancel" data-id="' + esc(id) + '">Annuler</button></div>').join("") + "</div>";
+    return h;
+  },
+  after() {
+    const keep = () => { const e = $("#rq_ech"), n = $("#rq_note"); if (e) S.f.ech = e.value; if (n) S.f.note = n.value; };
+    $("#app").querySelectorAll("[data-rqp]").forEach(c => c.addEventListener("change", () => { keep(); S.f.sel[c.dataset.rqp] = c.checked; render(); }));
+    ["rq_ech", "rq_note"].forEach(k => { const el = $("#" + k); if (el) el.addEventListener("input", keep); });
+  }
+};
+async function rqSend() {
+  const f = S.f;
+  f.ech = ($("#rq_ech") || {}).value || ""; f.note = ($("#rq_note") || {}).value || "";
+  if (!f.uid) return toast("Choisissez l'opérateur.", "err");
+  let produits = null;
+  if (f.scope === "sel") { produits = Object.keys(f.sel).filter(k => f.sel[k] && S.produits[k]); if (!produits.length) return toast("Cochez au moins un produit.", "err"); }
+  const u = S.users[f.uid];
+  const res = await act("inv_demande_creer", { p_user_id: f.uid, p_produits: produits, p_note: f.note.trim(), p_echeance: f.ech || null }, "Demande envoyée à " + u.prenom);
+  if (res) go("inv");
 }
 
 /* ---------- État imprimable ---------- */
@@ -1276,10 +1378,10 @@ VIEWS.print = {
     h += '<div class="sh-head"><div><div class="sh-title">État du stock de produits phytopharmaceutiques</div>' +
       '<div>Édité le ' + now.toLocaleDateString("fr-FR") + " à " + now.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" }) + " par " + esc(S.me.prenom) + (S.me.certiphyto ? " (Certiphyto " + esc(S.me.certiphyto) + ")" : "") + "</div></div>" +
       '<div class="sh-sum">' + ps.length + " produit(s)" + (banned ? "<br><b>" + banned + " interdit(s) en stock</b>" : "") + "</div></div>";
-    h += "<h3>Stock</h3><table class=\"sh\"><thead><tr><th>Produit</th><th>N° AMM</th><th>Statut réglementaire</th><th class=\"r\">Quantité</th><th class=\"r\">Équiv. bidons</th><th>Dernier inventaire</th></tr></thead><tbody>";
+    h += "<h3>Stock</h3><table class=\"sh\"><thead><tr><th>Produit</th><th>N° AMM</th><th>Statut réglementaire</th><th class=\"r\">Quantité</th><th class=\"r\">Équiv. contenants</th><th>Dernier inventaire</th></tr></thead><tbody>";
     h += ps.length ? ps.map(([id, p]) => {
       const q = st[id] || 0, c = +p.contenance;
-      return "<tr" + (isBanned(p) ? ' class="ban"' : "") + "><td><b>" + esc(p.nom) + "</b>" + (p.commande && p.commande.enCours ? "<br><small>Commande en cours</small>" : "") + "</td><td>" + esc((p.ephy && p.ephy.amm) || p.amm || "—") + "</td><td>" + esc(regText(p)) + '</td><td class="r"><b>' + fmtN(q) + " " + esc(U(p)) + '</b></td><td class="r">' + (c > 0 ? fmtN(q / c) + " × " + fmtN(c) + " " + esc(U(p)) : "—") + "</td><td>" + (p.invLe ? fmtDate(p.invLe) : "—") + "</td></tr>";
+      return "<tr" + (isBanned(p) ? ' class="ban"' : "") + "><td><b>" + esc(p.nom) + "</b>" + (p.commande && p.commande.enCours ? "<br><small>Commande en cours</small>" : "") + "</td><td>" + esc((p.ephy && p.ephy.amm) || p.amm || "—") + "</td><td>" + esc(regText(p)) + '</td><td class="r"><b>' + fmtN(q) + " " + esc(U(p)) + '</b></td><td class="r">' + (c > 0 ? fmtN(q / c) + " " + ctw(p, q / c) + " × " + fmtN(c) + " " + esc(U(p)) : "—") + "</td><td>" + (p.invLe ? fmtDate(p.invLe) : "—") + "</td></tr>";
     }).join("") : '<tr><td colspan="6">Aucun produit.</td></tr>';
     h += "</tbody></table>";
     h += "<h3>Personnes inscrites sur l'application</h3><table class=\"sh\"><thead><tr><th>Prénom</th><th>Rôle</th><th>N° de certificat Certiphyto</th></tr></thead><tbody>";
@@ -1322,11 +1424,21 @@ VIEWS.alertes = {
     const noAmm = activeProducts().filter(([, p]) => !String(p.amm || "").trim()).length;
     if (noAmm) h += '<p class="muted" style="font-size:13px">' + noAmm + " produit(s) sans n° AMM ne sont pas surveillés.</p>";
     h += '<div class="foot" style="margin-top:10px"><button class="btn" data-a="go" data-v="ephy">📚 Données E-Phy</button></div>';
+    const dems = Object.entries(S.demandes || {}).filter(([, d]) => d.statut === "faite" || d.statut === "ouverte")
+      .sort((a, b) => (a[1].statut === "faite" ? 0 : 1) - (b[1].statut === "faite" ? 0 : 1) || String(b[1].createdAt).localeCompare(String(a[1].createdAt)));
+    if (dems.length) {
+      h += "<h2>Inventaires demandés</h2>";
+      for (const [id, d] of dems) {
+        if (d.statut === "faite") h += '<div class="card"><div><span class="badge in" style="margin:0">Réalisé</span></div><p style="margin:8px 0"><b>' + esc(d.prenom) + "</b> a compté <b>" + d.nbComptes + " produit(s)</b> le " + fmtDate(String(d.faitLe).slice(0, 10)) + " : <b>" + d.nbCorrections + " correction(s)</b> de stock.</p>" +
+          '<div class="row"><button class="btn pri" data-a="histoInv" data-n="' + esc(d.prenom) + '">Voir les corrections</button><button class="btn" data-a="rqSeen" data-id="' + esc(id) + '">Vu</button></div></div>';
+        else h += '<div class="card"><div><span class="badge cmd" style="margin:0">En attente</span></div><p style="margin:8px 0">Demandé à <b>' + esc(d.prenom) + "</b> le " + fmtDate(String(d.createdAt).slice(0, 10)) + (d.echeance ? " · avant le " + fmtDate(d.echeance) + (d.echeance < today() ? " <b style=\"color:var(--bad)\">(dépassé)</b>" : "") : "") + "</p></div>";
+      }
+    }
     h += "<h2>Stock</h2>";
     if (!open.length) h += '<div class="note ok">Aucune alerte de stock à traiter. 👍</div>';
     for (const [id, a] of open) {
       if (a.type === "produit_inconnu") {
-        h += '<div class="card"><div><span class="badge neg" style="margin:0">Produit hors liste</span></div><p style="margin:8px 0"><b>' + esc(a.prenom) + "</b> a utilisé <b>" + fmtN(a.quantite) + " " + esc(a.saisie === "bidons" ? "bidon(s)" : a.unite) + "</b> de « <b>" + esc(a.nomSaisi) + "</b> » le " + fmtDate(a.date) + "." +
+        h += '<div class="card"><div><span class="badge neg" style="margin:0">Produit hors liste</span></div><p style="margin:8px 0"><b>' + esc(a.prenom) + "</b> a utilisé <b>" + fmtN(a.quantite) + " " + esc(a.saisie === "bidons" ? (a.unite || "bidon") + "(s)" : a.unite) + "</b> de « <b>" + esc(a.nomSaisi) + "</b> » le " + fmtDate(a.date) + "." +
           (a.ean ? '<br><small class="muted">Code-barre : ' + esc(a.ean) + "</small>" : "") + (a.note ? '<br><small class="muted">« ' + esc(a.note) + " »</small>" : "") +
           '</p><div class="row"><button class="btn pri" data-a="assoc" data-id="' + esc(id) + '">Associer à un produit</button><button class="btn" data-a="resolve" data-id="' + esc(id) + '">Classer</button></div></div>';
       } else {
@@ -1382,7 +1494,7 @@ function renderHisto() {
 }
 function csvText() {
   const c = v => '"' + String(v ?? "").replace(/"/g, '""') + '"';
-  const lines = [["Date", "Type", "Produit", "Quantité", "Unité", "Bidons", "Personne", "Certiphyto", "Note"].map(c).join(";")];
+  const lines = [["Date", "Type", "Produit", "Quantité", "Unité", "Contenants", "Personne", "Certiphyto", "Note"].map(c).join(";")];
   for (const [, m] of histoRows()) {
     const q = m.type === "sortie" ? -m.quantite : m.quantite;
     lines.push([fmtDate(m.date), m.type === "entree" ? "Entrée" : m.type === "sortie" ? "Sortie" : "Inventaire", m.produitNom, String(q).replace(".", ","), m.unite, m.nbBidons ?? "", m.prenom, m.certiphyto, m.note].map(c).join(";"));
@@ -1414,7 +1526,7 @@ VIEWS.mes = {
     const mine = Object.entries(S.mouvements).filter(([, m]) => m.userId === S.me.id).sort(sortMv).slice(0, 50);
     const al = Object.entries(S.alertes).filter(([, a]) => a.userId === S.me.id && a.type === "produit_inconnu" && !a.resolu);
     let h = topbar("Mes saisies", "home") + "<h1>Mes saisies</h1>";
-    if (al.length) h += "<h2>Signalements en attente</h2><div class=\"list\">" + al.map(([, a]) => '<div class="it static"><div class="main"><div class="nm" style="font-size:15px">' + esc(a.nomSaisi) + '</div><div class="meta">' + fmtDate(a.date) + " · " + fmtN(a.quantite) + " " + esc(a.saisie === "bidons" ? "bidon(s)" : a.unite) + "</div></div></div>").join("") + "</div>";
+    if (al.length) h += "<h2>Signalements en attente</h2><div class=\"list\">" + al.map(([, a]) => '<div class="it static"><div class="main"><div class="nm" style="font-size:15px">' + esc(a.nomSaisi) + '</div><div class="meta">' + fmtDate(a.date) + " · " + fmtN(a.quantite) + " " + esc(a.saisie === "bidons" ? (a.unite || "bidon") + "(s)" : a.unite) + "</div></div></div>").join("") + "</div>";
     h += '<p class="muted" style="font-size:13px">Vous pouvez supprimer une sortie le jour même en cas d\'erreur.</p>';
     h += mine.length ? '<div class="list">' + mine.map(([id, m]) => mvRow(id, m, m.type === "sortie" && new Date(m.createdAt).toDateString() === new Date().toDateString())).join("") + "</div>" : '<div class="note info">Aucune saisie.</div>';
     return h;
@@ -1505,6 +1617,16 @@ const A = {
   invUndo: d => { delete invState()[d.id]; invRefresh(d.id); },
   invRestart: async () => { if (!await confirmBox("Tout recommencer ?", "Les comptages saisis sur cet appareil seront effacés (rien n'a encore été enregistré dans le stock).", "Recommencer", true)) return; S.inv = null; store.del(INV_KEY); render(); },
   invValidate: () => invValidate(),
+  invScan: () => scan(code => invGotCode(code)),
+  goReq: d => go("inv", { req: d.id }),
+  rqUser: d => { S.f.ech = ($("#rq_ech") || {}).value || S.f.ech; S.f.note = ($("#rq_note") || {}).value || S.f.note; S.f.uid = d.id; render(); },
+  rqScope: d => { S.f.ech = ($("#rq_ech") || {}).value || S.f.ech; S.f.note = ($("#rq_note") || {}).value || S.f.note; S.f.scope = d.k; render(); },
+  rqAll: () => { activeProducts().forEach(([id]) => S.f.sel[id] = true); render(); },
+  rqNone: () => { S.f.sel = {}; render(); },
+  rqSend: () => rqSend(),
+  rqCancel: async d => { if (!await confirmBox("Annuler cette demande ?", "L'opérateur ne la verra plus. Les comptages qu'il aurait commencés ne seront pas enregistrés.", "Annuler la demande", true)) return; act("inv_demande_statut", { p_id: d.id, p_statut: "annulee" }, "Demande annulée"); },
+  rqSeen: d => act("inv_demande_statut", { p_id: d.id, p_statut: "vue" }),
+  histoInv: d => go("histo", { ht: "ajustement", hp: d.n }),
   doPrint: () => { try { window.print(); } catch (e) { toast("Impression impossible sur cet appareil.", "err"); } }
 };
 document.addEventListener("click", e => {
