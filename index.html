@@ -1828,10 +1828,17 @@ VIEWS.pulv = {
     h += '<label class="f">Notes <small>(facultatif : buses, réglages, anti-dérive…)</small></label><input class="in" id="pv_notes" value="' + esc(p.notes || "") + '">';
     if (id) h += '<label class="tog"><span><b>En service</b></span><input type="checkbox" id="pv_act" ' + (p.actif !== false ? "checked" : "") + "></label>";
     h += '<div style="margin-top:16px"><button class="btn pri full" data-a="savePulv">Enregistrer</button></div>';
+    if (id) h += '<div class="foot" style="margin-top:18px"><button class="btn" style="color:var(--bad)" data-a="delPulv">🗑 Supprimer ce pulvérisateur</button></div>';
     return h;
   }
 };
 function pvVols(p) { const v = ((p && p.volumes) || []).map(Number).filter(x => x > 0); if (p && +p.volumeHa > 0 && !v.includes(+p.volumeHa)) v.push(+p.volumeHa); return v.sort((a, b) => a - b); }
+async function delPulv() {
+  const p = S.pulves[S.f.pid]; if (!p) return;
+  if (!await confirmBox("Supprimer « " + p.nom + " » ?", "Il disparaît définitivement de la liste. Les ordres déjà réalisés gardent son nom. Impossible s'il est prévu dans un ordre à faire.", "Supprimer", true)) return;
+  const r = await act("delete_pulve", { p_id: S.f.pid }, "Pulvérisateur supprimé");
+  if (r) go("pulvs");
+}
 async function savePulv() {
   const cap = parseN($("#pv_cap").value), vha = parseN($("#pv_vha").value);
   const raw = $("#pv_vols").value.split(/[;\s\/]+/).map(x => x.trim()).filter(Boolean), vols = raw.map(parseN);
@@ -2648,6 +2655,7 @@ const A = {
   oKind: d => { const o = trtOrder(); if (o.kind === d.k) return; o.kind = d.k; o.prods = []; o.mode = d.k === "diff" ? "Pose de diffuseurs" : "Pulvérisation"; render(); },
   oPulve: d => { const o = trtOrder(); o.pulve = d.id; const pv = S.pulves[d.id], vs = pvVols(pv);
     if (pv && (!String(o.vha).trim() || (vs.length && !vs.includes(parseN(o.vha))))) o.vha = pv.volumeHa ? String(pv.volumeHa) : (vs.length === 1 ? String(vs[0]) : ""); render(); },
+  delPulv: () => delPulv(),
   oVha: d => { trtOrder().vha = String(d.v); render(); },
   oAddProd: () => oAddProd(),
   oDelProd: d => { trtOrder().prods.splice(+d.i, 1); render(); },
