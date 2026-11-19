@@ -1809,7 +1809,7 @@ VIEWS.pulvs = {
   html() {
     const ps = Object.entries(S.pulves || {}).sort((a, b) => (a[1].actif === false) - (b[1].actif === false) || byName(a, b));
     let h = topbar("Pulvérisateurs", "trt") + "<h1>Pulvérisateurs</h1>";
-    h += ps.length ? '<div class="list">' + ps.map(([id, p]) => '<button class="it" data-a="go" data-v="pulv:' + esc(id) + '"' + (p.actif === false ? ' style="opacity:.5"' : "") + '><div class="main"><div class="nm">' + esc(p.nom) + (p.actif === false ? ' <span class="badge adj">Archivé</span>' : "") + '</div><div class="meta">' + (p.volumeHa ? "Réglage habituel : " + fmtN(p.volumeHa) + " L/ha" : "Volume/ha non renseigné") + '</div></div><div class="qty">' + fmtN(p.capacite) + " L</div></button>").join("") + "</div>"
+    h += ps.length ? '<div class="list">' + ps.map(([id, p]) => '<button class="it" data-a="go" data-v="pulv:' + esc(id) + '"' + (p.actif === false ? ' style="opacity:.5"' : "") + '><div class="main"><div class="nm">' + esc(p.nom) + (p.actif === false ? ' <span class="badge adj">Archivé</span>' : "") + '</div><div class="meta">' + (pvVols(p).length ? "Volumes/ha : " + pvVols(p).map(fmtN).join(" · ") + " L/ha" : "Volume/ha non renseigné") + '</div></div><div class="qty">' + fmtN(p.capacite) + " L</div></button>").join("") + "</div>"
       : '<div class="note info">Aucun pulvérisateur. Ajoutez ceux de l\'entreprise avec la capacité de leur cuve.</div>';
     if (isDec()) h += '<div class="foot"><button class="btn pri full" data-a="go" data-v="pulv">➕ Ajouter un pulvérisateur</button></div>';
     return h;
@@ -1821,19 +1821,25 @@ VIEWS.pulv = {
     let h = topbar(id ? "Pulvérisateur" : "Nouveau pulvérisateur", "pulvs") + "<h1>" + (id ? esc(p.nom) : "Nouveau pulvérisateur") + "</h1>";
     h += '<label class="f">Nom</label><input class="in" id="pv_nom" value="' + esc(p.nom || "") + '" placeholder="ex. Atomiseur 1500 L">';
     h += '<label class="f">Capacité utile de la cuve <small>(litres)</small></label><input class="in" id="pv_cap" inputmode="decimal" value="' + esc(p.capacite ?? "") + '" placeholder="ex. 1500">';
-    h += '<label class="f">Volume de bouillie habituel <small>(L/ha, en passant dans tous les rangs ; modifiable à chaque ordre)</small></label><input class="in" id="pv_vha" inputmode="decimal" value="' + esc(p.volumeHa ?? "") + '" placeholder="ex. 400">';
+    const vols = pvVols(p);
+    h += '<label class="f">Volumes/ha possibles <small>(L/ha, séparés par des espaces ou des points-virgules)</small></label><input class="in" id="pv_vols" inputmode="decimal" value="' + esc(vols.map(v => String(v).replace(".", ",")).join(" ; ")) + '" placeholder="ex. 250 ; 500 ; 1000">' +
+      '<p class="muted" style="font-size:13px;margin:4px 2px 0">Ce sont les volumes théoriques par hectare que permettent les réglages du pulvérisateur (buses, pression, vitesse), en passant dans tous les rangs. Le « 1 rang sur deux » se choisit à part, dans l\'ordre.</p>';
+    h += '<label class="f">Volume proposé par défaut <small>(facultatif)</small></label><input class="in" id="pv_vha" inputmode="decimal" value="' + esc(p.volumeHa ?? "") + '" placeholder="ex. 500">';
     h += '<label class="f">Notes <small>(facultatif : buses, réglages, anti-dérive…)</small></label><input class="in" id="pv_notes" value="' + esc(p.notes || "") + '">';
     if (id) h += '<label class="tog"><span><b>En service</b></span><input type="checkbox" id="pv_act" ' + (p.actif !== false ? "checked" : "") + "></label>";
     h += '<div style="margin-top:16px"><button class="btn pri full" data-a="savePulv">Enregistrer</button></div>';
     return h;
   }
 };
+function pvVols(p) { const v = ((p && p.volumes) || []).map(Number).filter(x => x > 0); if (p && +p.volumeHa > 0 && !v.includes(+p.volumeHa)) v.push(+p.volumeHa); return v.sort((a, b) => a - b); }
 async function savePulv() {
   const cap = parseN($("#pv_cap").value), vha = parseN($("#pv_vha").value);
+  const raw = $("#pv_vols").value.split(/[;\s\/]+/).map(x => x.trim()).filter(Boolean), vols = raw.map(parseN);
+  if (vols.some(v => !(v > 0 && v <= 5000))) return toast("Volumes/ha : des nombres entre 1 et 5000, séparés par des espaces ou des « ; ».", "err", 5000);
   if (!$("#pv_nom").value.trim()) return toast("Indiquez le nom.", "err");
   if (!(cap > 0)) return toast("Indiquez la capacité de la cuve en litres.", "err");
   const r = await act("save_pulve", { p_id: S.f.pid || null, p_nom: $("#pv_nom").value, p_capacite: cap, p_volume_ha: vha > 0 ? vha : null,
-    p_notes: $("#pv_notes").value, p_actif: S.f.pid ? $("#pv_act").checked : true }, "Pulvérisateur enregistré");
+    p_notes: $("#pv_notes").value, p_actif: S.f.pid ? $("#pv_act").checked : true, p_volumes: vols }, "Pulvérisateur enregistré");
   if (r) go("pulvs");
 }
 
@@ -1934,8 +1940,12 @@ VIEWS.trtnew = {
     if (o.kind !== "diff") {
     if (!activePulvs().length) h += '<div class="note warn" style="margin-top:12px">Aucun pulvérisateur enregistré. <button class="btn sm" data-a="go" data-v="pulvs">🚜 Ajouter</button></div>';
     h += '<label class="f">Pulvérisateur</label><div class="grid2">' + activePulvs().map(([id, p]) =>
-      '<button class="big" style="min-height:64px' + (o.pulve === id ? ";outline:3px solid var(--acc)" : "") + '" data-a="oPulve" data-id="' + esc(id) + '">' + esc(p.nom) + '<span class="sub">' + fmtN(p.capacite) + " L" + (p.volumeHa ? " · " + fmtN(p.volumeHa) + " L/ha" : "") + "</span></button>").join("") + "</div>";
-    h += '<div class="row" style="margin-top:4px"><div><label class="f">Volume de bouillie <small>(L/ha, tous rangs)</small></label><input class="in" id="o_vha" inputmode="decimal" value="' + esc(o.vha) + '" placeholder="ex. 400"></div></div>';
+      '<button class="big" style="min-height:64px' + (o.pulve === id ? ";outline:3px solid var(--acc)" : "") + '" data-a="oPulve" data-id="' + esc(id) + '">' + esc(p.nom) + '<span class="sub">' + fmtN(p.capacite) + " L" + (pvVols(p).length ? " · " + pvVols(p).map(fmtN).join(" / ") + " L/ha" : "") + "</span></button>").join("") + "</div>";
+    { const pvo = S.pulves[o.pulve], vs = pvVols(pvo);
+      h += '<label class="f">Volume de bouillie <small>(L/ha théorique du réglage, tous rangs)</small></label>';
+      if (vs.length) h += '<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:6px">' + vs.map(v => '<button class="btn' + (parseN(o.vha) === v ? " pri" : "") + '" style="flex:1;min-width:80px" data-a="oVha" data-v="' + v + '">' + fmtN(v) + " L/ha</button>").join("") + "</div>";
+      h += '<input class="in" id="o_vha" inputmode="decimal" value="' + esc(o.vha) + '" placeholder="' + (vs.length ? "autre volume (L/ha)" : "ex. 400") + '">';
+      h += '<p class="muted" style="font-size:13px;margin:4px 2px 0">ℹ️ C\'est le volume/ha théorique donné par le réglage du pulvérisateur (buses, pression, vitesse), comme si vous passiez dans tous les rangs. Ce n\'est pas l\'option « 1 rang sur deux » : elle se coche ci-dessous et l\'appli divise alors la surface traitée par deux.</p>'; }
     h += '<label class="tog card" style="margin-top:12px"><span><b>Un rang sur deux</b><br><small class="muted">Même concentration en cuve, moitié de surface traitée à ce passage</small></span><input type="checkbox" id="o_r2" ' + (o.r2 ? "checked" : "") + "></label>";
     }
     // produits
@@ -2636,7 +2646,9 @@ const A = {
   clRecv: d => { const c = S.cmdLibres[d.id]; go("newprod", { nom: c ? c.nom : "", then: "entree", cmdLibre: d.id }); },
   savePulv: () => savePulv(),
   oKind: d => { const o = trtOrder(); if (o.kind === d.k) return; o.kind = d.k; o.prods = []; o.mode = d.k === "diff" ? "Pose de diffuseurs" : "Pulvérisation"; render(); },
-  oPulve: d => { const o = trtOrder(); o.pulve = d.id; const pv = S.pulves[d.id]; if (pv && pv.volumeHa && !String(o.vha).trim()) o.vha = String(pv.volumeHa); render(); },
+  oPulve: d => { const o = trtOrder(); o.pulve = d.id; const pv = S.pulves[d.id], vs = pvVols(pv);
+    if (pv && (!String(o.vha).trim() || (vs.length && !vs.includes(parseN(o.vha))))) o.vha = pv.volumeHa ? String(pv.volumeHa) : (vs.length === 1 ? String(vs[0]) : ""); render(); },
+  oVha: d => { trtOrder().vha = String(d.v); render(); },
   oAddProd: () => oAddProd(),
   oDelProd: d => { trtOrder().prods.splice(+d.i, 1); render(); },
   oSend: () => oSend(),
